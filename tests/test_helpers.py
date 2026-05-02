@@ -122,3 +122,39 @@ def test_split_chain_or():
 def test_split_chain_mixed():
     parts = hook.split_command_chain("a && b ; c || d")
     assert [p.strip() for p in parts] == ["a", "b", "c", "d"]
+
+
+import subprocess
+import tempfile
+import os
+
+
+# current_branch / has_develop_branch ---------------------------------------
+
+def test_current_branch_on_feature(temp_git_repo, monkeypatch):
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    monkeypatch.chdir(repo)
+    assert hook.current_branch() == "feature/foo"
+
+
+def test_current_branch_detached_returns_none(temp_git_repo, monkeypatch):
+    repo = temp_git_repo()
+    # Detach HEAD by checking out the commit hash directly.
+    sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+    ).strip()
+    subprocess.check_call(["git", "-C", str(repo), "checkout", sha], stderr=subprocess.DEVNULL)
+    monkeypatch.chdir(repo)
+    assert hook.current_branch() is None
+
+
+def test_has_develop_branch_true(temp_git_repo, monkeypatch):
+    repo = temp_git_repo(branches=["main", "develop"], head="main")
+    monkeypatch.chdir(repo)
+    assert hook.has_develop_branch() is True
+
+
+def test_has_develop_branch_false_single_trunk(temp_git_repo, monkeypatch):
+    repo = temp_git_repo(branches=["main"], head="main")
+    monkeypatch.chdir(repo)
+    assert hook.has_develop_branch() is False

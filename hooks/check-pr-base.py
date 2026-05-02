@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from typing import Optional
 
@@ -91,6 +92,34 @@ _CHAIN_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
 def split_command_chain(cmd: str) -> list[str]:
     """Split a command string on shell connectors (&&, ||, ;)."""
     return [part for part in _CHAIN_RE.split(cmd) if part]
+
+
+# ---------------------------------------------------------------------------
+# Shell I/O wrappers — tests can patch these or use temp_git_repo / gh_stub.
+# All wrappers fail open: any non-zero exit or exception returns None / False.
+# ---------------------------------------------------------------------------
+
+def _run(cmd: list[str], timeout: float = 5.0) -> Optional[str]:
+    """Run a command; return stdout stripped, or None on any failure."""
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def current_branch() -> Optional[str]:
+    """Return the current branch name, or None on detached HEAD / git failure."""
+    return _run(["git", "symbolic-ref", "--short", "HEAD"])
+
+
+def has_develop_branch() -> bool:
+    """Return True if the local repo has a 'develop' branch."""
+    return _run(["git", "rev-parse", "--verify", "--quiet", "develop"]) is not None
 
 
 # ---------------------------------------------------------------------------
