@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [2.1.0] - 2026-05-02
+
+### Changed
+
+- **Distribution** — git-flow is now a standalone Claude Code marketplace at `abhattacherjee/git-flow`. No functional changes to commands or scripts.
+- **`bump-version.sh`** — keeps `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` in lockstep with pre-bump validation (matches obsidian-brain pattern).
+
+### Removed
+
+- **Legacy `plugin-manifest.json`** — replaced by `.claude-plugin/plugin.json` + `.claude-plugin/marketplace.json` for standalone marketplace distribution.
+
+### Migration notes
+
+- Previously distributed via the `claude-code-skills` monorepo. The monorepo entry is being removed in a separate PR (see migration spec).
+- Install: `/plugin marketplace add abhattacherjee/git-flow` then `/plugin install git-flow`.
+
 ## [2.0.0] - 2026-02-27
 
 Two-tier architecture: generic Git Flow commands at user-level, project-specific overrides at project-level.
