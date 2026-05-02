@@ -60,6 +60,28 @@ def parse_base_flag(cmd: str) -> Optional[str]:
     return m.group("quoted") or m.group("bare")
 
 
+# Match "gh pr merge" followed by a PR number or GitHub PR URL. Skips flags.
+_PR_NUM_RE = re.compile(r"/pull/(\d+)|(?<!\S)(\d+)(?!\S)")
+
+
+def parse_pr_number(cmd: str) -> Optional[str]:
+    """Extract the PR number from a `gh pr merge` command.
+
+    Recognizes bare integers (`gh pr merge 42`) and PR URLs (`.../pull/42`).
+    Returns None if no number is present (gh would resolve from current branch).
+    """
+    # Strip the "gh pr merge" prefix and look at the rest.
+    idx = cmd.find("gh pr merge")
+    if idx < 0:
+        return None
+    tail = cmd[idx + len("gh pr merge"):]
+    # Filter out tokens that start with `-` (flags) by matching only standalone
+    # numeric tokens or /pull/<num>.
+    for m in _PR_NUM_RE.finditer(tail):
+        return m.group(1) or m.group(2)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------

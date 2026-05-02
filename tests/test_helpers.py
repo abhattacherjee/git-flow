@@ -73,3 +73,26 @@ def test_parse_base_flag_shell_var_returns_literal():
     """Caller decides what to do with a $VAR value (currently: allow + warn)."""
     assert hook.parse_base_flag('gh pr create --base "$BASE"') == "$BASE"
     assert hook.parse_base_flag("gh pr create --base $BASE") == "$BASE"
+
+
+# parse_pr_number -----------------------------------------------------------
+
+def test_parse_pr_number_bare():
+    assert hook.parse_pr_number("gh pr merge 42") == "42"
+
+
+def test_parse_pr_number_with_flags_after():
+    assert hook.parse_pr_number("gh pr merge 42 --squash --delete-branch") == "42"
+
+
+def test_parse_pr_number_with_flags_before():
+    assert hook.parse_pr_number("gh pr merge --squash 42") == "42"
+
+
+def test_parse_pr_number_url_form():
+    assert hook.parse_pr_number("gh pr merge https://github.com/o/r/pull/7") == "7"
+
+
+def test_parse_pr_number_missing_returns_none():
+    assert hook.parse_pr_number("gh pr merge") is None
+    assert hook.parse_pr_number("gh pr merge --squash") is None
