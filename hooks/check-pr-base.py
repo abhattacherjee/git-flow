@@ -17,11 +17,31 @@ from __future__ import annotations
 
 import json
 import sys
+from typing import Optional
 
+
+# ---------------------------------------------------------------------------
+# Pure helpers
+# ---------------------------------------------------------------------------
+
+def expected_base_for(branch: str) -> Optional[str]:
+    """Return the required PR base for a Git Flow branch, or None if not Git Flow."""
+    if branch.startswith("feature/"):
+        return "develop"
+    if branch.startswith("hotfix/"):
+        return "main"
+    if branch.startswith("release/"):
+        return "main"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     try:
-        json.load(sys.stdin)  # placeholder: parse only
+        json.load(sys.stdin)
     except Exception:
         pass
     sys.exit(0)
