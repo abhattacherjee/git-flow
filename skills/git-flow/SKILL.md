@@ -2,7 +2,7 @@
 name: git-flow
 description: "Git Flow branching workflow reference and status diagnostic. Use when: (1) /flow-status or checking repository state, (2) creating feature/release/hotfix branches, (3) finishing and merging Git Flow branches, (4) understanding Git Flow conventions in any repository, (5) setting up or overriding Git Flow commands for a new project."
 metadata:
-  version: 2.0.0
+  version: 2.1.2
 ---
 
 # Git Flow
@@ -14,9 +14,10 @@ customization.
 ## Quick Check
 
 ```bash
-~/.claude/skills/git-flow/scripts/git-flow-status.sh            # Human-readable
-~/.claude/skills/git-flow/scripts/git-flow-status.sh --json     # For agent consumption
-~/.claude/skills/git-flow/scripts/git-flow-status.sh --help     # Usage
+/git-flow:flow-status                                                              # Slash command (preferred)
+${CLAUDE_PLUGIN_ROOT}/skills/git-flow/scripts/git-flow-status.sh                   # Direct script — human-readable
+${CLAUDE_PLUGIN_ROOT}/skills/git-flow/scripts/git-flow-status.sh --json            # Direct script — agent consumption
+${CLAUDE_PLUGIN_ROOT}/skills/git-flow/scripts/git-flow-status.sh --help            # Usage
 ```
 
 ## Branching Model
@@ -47,10 +48,11 @@ main ─────────────────────────
 ```
 Resolution order:
   1. .claude/commands/<name>.md       ← Project (checked first)
-  2. ~/.claude/commands/<name>.md      ← User (fallback)
+  2. Plugin-provided commands         ← e.g., git-flow:feature, git-flow:release
+                                        (installed by /plugin install git-flow)
 ```
 
-Generic commands at `~/.claude/commands/` work in any Git Flow repo:
+Generic commands shipped by this plugin work in any Git Flow repo:
 - `/feature`, `/release`, `/hotfix`, `/finish`, `/flow-status`
 
 Projects override by placing a same-name file in `.claude/commands/`.
@@ -141,7 +143,7 @@ When creating release branches, choose the version increment:
 
 ### New Project Setup
 ```
-1. Verify generic commands:    ls ~/.claude/commands/
+1. Verify generic commands:    /plugin list   # confirm git-flow is installed
 2. Test: /flow-status          # Should work immediately
 3. Identify override needs:    Does the project have monorepo? Push hooks?
 4. Create overrides:           See references/override-guide.md
@@ -210,19 +212,28 @@ branch name patterns.
 ## Directory Layout
 
 ```
-~/.claude/skills/git-flow/
-├── SKILL.md                          # This file — branching model, commands, gotchas
-├── scripts/
-│   └── git-flow-status.sh            # Portable diagnostic (any Git Flow repo)
-└── references/
-    └── override-guide.md             # How to write project-level command overrides
+Plugin internal layout (what ships in the marketplace):
 
-~/.claude/commands/                    # Generic commands (created by this skill)
-├── feature.md                        # /feature <name>
-├── release.md                        # /release <version>
-├── hotfix.md                         # /hotfix
-├── finish.md                         # /finish [--no-delete] [--no-tag]
-└── flow-status.md                    # /flow-status
+git-flow/
+├── .claude-plugin/
+│   ├── plugin.json                   # Plugin metadata
+│   └── marketplace.json              # Marketplace manifest
+├── skills/
+│   └── git-flow/
+│       ├── SKILL.md                  # This file — branching model, commands, gotchas
+│       ├── scripts/
+│       │   └── git-flow-status.sh    # Portable diagnostic (any Git Flow repo)
+│       └── references/
+│           └── override-guide.md     # How to write project-level command overrides
+└── commands/
+    ├── feature.md                    # /feature <name>
+    ├── release.md                    # /release <version>
+    ├── hotfix.md                     # /hotfix
+    ├── finish.md                     # /finish [--no-delete] [--no-tag]
+    └── flow-status.md                # /flow-status
+
+Runtime install (read-only, served from cache):
+~/.claude/plugins/cache/git-flow-repo/git-flow/<version>/
 ```
 
 ## See Also
