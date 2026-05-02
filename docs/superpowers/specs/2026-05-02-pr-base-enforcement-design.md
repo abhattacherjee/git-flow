@@ -74,8 +74,12 @@ hooks/
 ├── hooks.json              # Plugin hook declaration
 └── check-pr-base.py        # ~150 lines, mirrors prevent-direct-push.py pattern
 tests/
-├── test_check_pr_base.py   # Unit tests for hook helpers
-└── test_git_flow_finish_sh.bats  # bats-core tests for verify_pr_base()
+├── conftest.py                 # pytest fixtures: temp_git_repo, gh_stub, run_hook
+├── test_helpers.py             # pure-function unit tests
+├── test_hook_e2e.py            # end-to-end hook invocation tests (17 cases)
+├── test_verify_pr_base_sh.py   # bash function tests via subprocess
+├── fixtures/bin/gh             # stub: reads MOCK_GH_STDOUT / MOCK_GH_EXIT env
+└── run.sh                      # pytest entrypoint
 ```
 
 **Modified:**
@@ -300,7 +304,25 @@ To fix, re-run with:
 
 ## 9. Testing strategy
 
-### 9.1 Unit tests — `tests/test_check_pr_base.py`
+Three layers, all automated via pytest. No bats dependency (not installed in dev env); pytest drives both the Python hook and the bash function via `subprocess.run`. Every check from the original manual verification list is converted into a test case here — no reliance on developer memory.
+
+Test layout:
+
+```
+tests/
+├── conftest.py                 # Fixtures: temp git repo, gh stub, hook runner
+├── test_helpers.py             # §9.1 — pure-function unit tests
+├── test_hook_e2e.py            # §9.2 — end-to-end hook invocation tests
+├── test_verify_pr_base_sh.py   # §9.3 — bash function tests
+├── fixtures/
+│   └── bin/
+│       └── gh                  # stub: reads MOCK_GH_STDOUT / MOCK_GH_EXIT env
+└── run.sh                      # entrypoint: cd repo root && pytest tests/ -v
+```
+
+### 9.1 Pure-function unit tests — `test_helpers.py`
+
+Direct imports, no I/O, no mocks (other than `unittest.mock.patch` on the four shell wrappers when needed):
 
 | Function | Coverage |
 | --- | --- |
@@ -308,35 +330,84 @@ To fix, re-run with:
 | `parse_base_flag` | `--base develop`, `--base=develop`, `-B develop`, `--base "develop"`, `--base 'develop'`, no flag → None, `--base $VAR` returns literal |
 | `parse_pr_number` | `gh pr merge 42`, `gh pr merge --squash 42`, URL form `gh pr merge https://github.com/o/r/pull/7`, no number → None |
 | `split_command_chain` | bare cmd, `&&`, `;`, `\|\|`, mixed |
-| `check_create` | feature + missing-base → deny MISSING_BASE; feature + `--base main` → deny WRONG_BASE; feature + `--base develop` → allow; hotfix + `--base main` → allow; hotfix + `--base develop` → deny; non-Git-Flow branch → allow; detached HEAD → allow |
-| `check_merge` | mocked gh response; feature/x with develop base → allow; feature/x with main base → deny; gh CalledProcessError → allow; release/x with main base → allow |
-| `main` integration | full stdin JSON → expected stdout JSON for each deny case; allow path emits no stdout |
-| Edge cases | `&&` chain, quoted echo of `gh pr create`, `--base "$VAR"` (allow + warn), `gh pr view` (allow), draft PR (deny) |
+| `check_create` (with patched `current_branch` + `has_develop_branch`) | feature + missing-base → deny MISSING_BASE; feature + `--base main` → deny WRONG_BASE; feature + `--base develop` → allow; hotfix + `--base main` → allow; hotfix + `--base develop` → deny; non-Git-Flow branch → allow; detached HEAD → allow |
+| `check_merge` (with patched `pr_refs_for`) | feature/x with develop base → allow; feature/x with main base → deny; gh CalledProcessError → allow; release/x with main base → allow |
 
-All `gh`/`git` calls go through helper functions, patched at one place via `unittest.mock.patch`.
+### 9.2 End-to-end hook tests — `test_hook_e2e.py`
 
-### 9.2 Bash tests — `tests/test_git_flow_finish_sh.bats`
+Each test invokes the real `hooks/check-pr-base.py` script via `subprocess.run`, with stdin = harness JSON payload, in a temp git repo, with a stubbed `gh` on `PATH`. Asserts on exit code (always 0), stdout (deny payload JSON or empty), and stderr.
+
+**Fixtures (`conftest.py`):**
+
+- `temp_git_repo`: pytest fixture that `git init`s a tmp dir, creates branches as requested by the test (`main`, `develop`, `feature/x`, etc.), checks out the requested HEAD branch, returns the path.
+- `gh_stub`: pytest fixture that prepends `tests/fixtures/bin` to `$PATH`. The stub `gh` reads `MOCK_GH_STDOUT` (printed verbatim) and `MOCK_GH_EXIT` (numeric exit code, default 0) from env. Test sets these per-call.
+- `run_hook(payload, cwd, env)`: helper that invokes `python3 hooks/check-pr-base.py` with the given JSON on stdin, returns `(exit_code, stdout, stderr)`.
+
+**Scenarios covered (each maps to a `def test_*` case):**
+
+| # | Test name | Setup | Assertion |
+| --- | --- | --- | --- |
+| 1 | `test_create_missing_base_on_feature_blocked` | branch=feature/x, develop exists, cmd=`gh pr create --title t` | exit=0, stdout JSON deny, reason contains "MISSING_BASE" and "feature/x" and `--base develop` |
+| 2 | `test_create_wrong_base_on_feature_blocked` | branch=feature/x, cmd=`gh pr create --base main --title t` | exit=0, stdout JSON deny, reason contains "WRONG_BASE" and "main" and `--base develop` |
+| 3 | `test_create_correct_base_on_feature_allowed` | branch=feature/x, cmd=`gh pr create --base develop --title t` | exit=0, stdout empty (allow) |
+| 4 | `test_merge_wrong_base_blocked` | branch=feature/x, cmd=`gh pr merge 42 --squash`, gh stub → `{"baseRefName":"main","headRefName":"feature/x"}` | exit=0, stdout JSON deny, reason contains "PR #42", "main", "develop", `gh pr edit 42 --base develop` |
+| 5 | `test_merge_correct_base_allowed` | branch=feature/x, cmd=`gh pr merge 42`, gh stub → `{"baseRefName":"develop","headRefName":"feature/x"}` | exit=0, stdout empty |
+| 6 | `test_create_on_main_branch_allowed` | branch=main, cmd=`gh pr create --base main` | exit=0, stdout empty (not Git Flow) |
+| 7 | `test_single_trunk_repo_allowed` | branch=feature/x, develop branch does NOT exist, cmd=`gh pr create --title t` | exit=0, stdout empty (no develop = not Git Flow) |
+| 8 | `test_create_hotfix_correct_base_allowed` | branch=hotfix/v1.0.1, cmd=`gh pr create --base main --title t` | exit=0, stdout empty |
+| 9 | `test_create_hotfix_wrong_base_blocked` | branch=hotfix/v1.0.1, cmd=`gh pr create --base develop --title t` | exit=0, stdout JSON deny, reason contains "WRONG_BASE" and "main" |
+| 10 | `test_create_release_wrong_base_blocked` | branch=release/v1.0, cmd=`gh pr create --base develop --title t` | exit=0, stdout JSON deny |
+| 11 | `test_unrelated_command_passthrough` | cmd=`echo hello` | exit=0, stdout empty |
+| 12 | `test_gh_failure_fails_open` | branch=feature/x, cmd=`gh pr merge 42`, gh stub exit=2 | exit=0, stdout empty (fail-open) |
+| 13 | `test_chained_command_validates_each_segment` | branch=feature/x, cmd=`gh pr create --base main --title t && echo done`, expects deny on first segment | exit=0, stdout JSON deny |
+| 14 | `test_quoted_string_with_gh_pr_create_does_not_match` | cmd=`echo "gh pr create --base main"` | exit=0, stdout empty (word-boundary regex) |
+| 15 | `test_gh_pr_view_other_subcommand_passthrough` | cmd=`gh pr view 42` | exit=0, stdout empty |
+| 16 | `test_draft_create_missing_base_on_feature_blocked` | branch=feature/x, cmd=`gh pr create --draft --title t` | exit=0, stdout JSON deny |
+| 17 | `test_internal_exception_fails_open` | malformed stdin (e.g., not JSON) | exit=0, stdout empty, stderr contains traceback |
+
+### 9.3 Bash function tests — `test_verify_pr_base_sh.py`
+
+Drives the bash function via subprocess. Sources the script in a subshell, calls `verify_pr_base "$@"`, captures exit code + stderr.
+
+```python
+def run_verify(pr_num, expected_base, gh_stdout, gh_exit=0, env=None):
+    script = textwrap.dedent(f"""
+        source scripts/git-flow-finish.sh   # sources function defs without invoking main flow
+        verify_pr_base "{pr_num}" "{expected_base}"
+    """)
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=...)
+```
+
+(Side note for implementation: `git-flow-finish.sh` will need a small guard — `if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main; fi` — at the bottom so sourcing for tests doesn't trigger the full flow. If that guard isn't already present it's added as part of this change.)
 
 | Test | Setup | Assertion |
 | --- | --- | --- |
-| Pass on match | mock `gh` to print `develop` | function returns 0, no stderr |
-| Fail on mismatch | mock `gh` to print `main`, expected=develop | returns 1, stderr contains `ABORTING` and `gh pr edit` |
-| Fail-open on gh error | mock `gh` to exit 2 | returns 0 |
+| `test_verify_pass_on_match` | gh stub → `develop`, expected=develop | exit=0, stderr empty |
+| `test_verify_fail_on_mismatch` | gh stub → `main`, expected=develop | exit=1, stderr contains "ABORTING", `PR #42`, `gh pr edit 42 --base develop` |
+| `test_verify_fail_open_on_gh_error` | gh stub exit=2 | exit=0 (fail open) |
 
-Mock `gh` by prepending `tests/fixtures/bin/` to `PATH`.
+### 9.4 What is NOT automated (and why)
 
-### 9.3 Manual verification checklist
+**`/finish` end-to-end happy path against a real GitHub PR.** The original checklist item 5 ("`/finish` on a correctly-based feature PR completes normally") cannot be automated without a real GitHub remote and PR. It's explicitly *not* a regression risk for this change — `verify_pr_base` returning 0 simply lets `/finish` proceed unchanged. The Layer 1 hook test (#5 in §9.2) and the Layer 2 bash test (`test_verify_pass_on_match`) together cover the only new code paths involved. No manual smoke test required.
 
-1. `gh pr create --title "test"` on `feature/test-block` → blocked with MISSING_BASE.
-2. `gh pr create --base main --title "test"` on `feature/test-block` → blocked with WRONG_BASE.
-3. `gh pr create --base develop --title "test"` on `feature/test-block` → succeeds.
-4. `gh pr merge <N>` on a wrong-base PR → blocked.
-5. `/finish` on a correctly-based feature PR → completes normally.
-6. On `main` branch: `gh pr create --base main` → allows.
-7. Single-trunk repo (no `develop`): `gh pr create` on `feature/x` → allows.
-8. `hooks/hooks.json` removed → script `verify_pr_base` still catches at `/finish` time.
+### 9.5 Test runner
 
-The two historical incidents (obsidian-brain PR #30, knowledge-base-ui PR #10) become tests 1 and 4.
+`tests/run.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+exec python3 -m pytest tests/ -v "$@"
+```
+
+Optional follow-up (not part of this issue): add `.github/workflows/ci.yml` that runs `tests/run.sh` on every PR. Listed in §13 as out-of-scope but worth filing as a sub-issue.
+
+### 9.6 Regression coverage for the historical incidents
+
+- obsidian-brain PR #30 (wrong-base merge to main from feature branch) → covered by test #4 (`test_merge_wrong_base_blocked`) and test #2 (`test_create_wrong_base_on_feature_blocked`).
+- knowledge-base-ui PR abhattacherjee/harden-repo#10 (same pattern) → same tests.
+- Any future regression in either Layer 1 or Layer 2 fails the suite. CI hook-up is recommended but not gating.
 
 ## 10. Documentation
 
@@ -364,6 +435,8 @@ The two historical incidents (obsidian-brain PR #30, knowledge-base-ui PR #10) b
 - Auto-rewriting the user's command (block-and-instruct is conservative).
 - Sub-issue for harden-repo to also install a project-local copy of the hook (covered by the plugin-bundled hook for any repo using git-flow).
 - A dedicated GitHub Action that enforces base on the server side (defense beyond the local CLI; future work).
+- Wiring `tests/run.sh` to GitHub Actions CI (this repo currently has no `.github/workflows/`). Tests are runnable locally and via the test-runner script; CI hook-up should be a separate change so this PR stays focused. File a follow-up if desired.
+- Replacing the §9.4 end-to-end `/finish` smoke test with a recorded mock-server fixture. Possible but adds significant infrastructure for a path already covered by the unit + e2e tests on the only new code.
 
 ## 14. Cross-references
 
