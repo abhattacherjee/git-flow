@@ -96,3 +96,29 @@ def test_parse_pr_number_url_form():
 def test_parse_pr_number_missing_returns_none():
     assert hook.parse_pr_number("gh pr merge") is None
     assert hook.parse_pr_number("gh pr merge --squash") is None
+
+
+# split_command_chain -------------------------------------------------------
+
+def test_split_chain_bare():
+    assert hook.split_command_chain("gh pr create --base develop") == ["gh pr create --base develop"]
+
+
+def test_split_chain_and():
+    parts = hook.split_command_chain("gh pr create --base develop && echo done")
+    assert [p.strip() for p in parts] == ["gh pr create --base develop", "echo done"]
+
+
+def test_split_chain_semicolon():
+    parts = hook.split_command_chain("a ; b ; c")
+    assert [p.strip() for p in parts] == ["a", "b", "c"]
+
+
+def test_split_chain_or():
+    parts = hook.split_command_chain("a || b")
+    assert [p.strip() for p in parts] == ["a", "b"]
+
+
+def test_split_chain_mixed():
+    parts = hook.split_command_chain("a && b ; c || d")
+    assert [p.strip() for p in parts] == ["a", "b", "c", "d"]

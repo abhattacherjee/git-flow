@@ -82,6 +82,17 @@ def parse_pr_number(cmd: str) -> Optional[str]:
     return None
 
 
+# Split on shell connectors. Naive (does not respect quoted strings) — that's
+# acceptable here because the goal is best-effort layered defense, and the
+# subcommand handlers re-validate each segment anyway.
+_CHAIN_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
+
+
+def split_command_chain(cmd: str) -> list[str]:
+    """Split a command string on shell connectors (&&, ||, ;)."""
+    return [part for part in _CHAIN_RE.split(cmd) if part]
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
