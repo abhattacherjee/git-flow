@@ -1,0 +1,14 @@
+{
+  "name": "git-flow-repo",
+  "owner": {
+    "name": "Abhishek"
+  },
+  "plugins": [
+    {
+      "name": "git-flow",
+      "source": "./",
+      "version": "2.0.0",
+      "description": "Git Flow branching workflow with slash commands and diagnostic tools"
+    }
+  ]
+}
