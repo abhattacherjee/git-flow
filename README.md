@@ -1,109 +1,174 @@
 # git-flow
 
-Git Flow branching workflow with slash commands and diagnostic tools
+A Claude Code plugin that brings the [Git Flow branching model](https://nvie.com/posts/a-successful-git-branching-model/) to the command palette. Five slash commands cover the full lifecycle (`/feature`, `/release`, `/hotfix`, `/finish`, `/flow-status`), backed by a skill that knows the conventions, gotchas, and override patterns. Works in any repo that uses Git Flow — Node, Python, Rust, monorepos, plugin repos, anything.
 
-## What It Does
+## What you get
 
-Git Flow branching workflow reference and status diagnostic.
+**Five slash commands** that handle the routine moves so you stop thinking about which branch to cut from, what to merge to, and what to tag:
 
-**Use when:**
-- /flow-status or checking repository state, 
-- creating feature/release/hotfix branches, 
-- finishing and merging Git Flow branches, 
-- understanding Git Flow conventions in any repository, 
-- setting up or overriding Git Flow commands for a new project.
+| Command | What it does |
+|---|---|
+| `/feature <name>` | Cuts `feature/<name>` from `develop`, pushes with tracking |
+| `/release <version>` | Cuts `release/<version>` from `develop`, bumps version files, updates `CHANGELOG.md` |
+| `/hotfix` | Cuts `hotfix/<auto-version>` from `main`, auto-increments the patch from the latest release tag |
+| `/finish` | Merges the current branch to its target(s), tags releases/hotfixes, bumps `develop` to the next dev cycle, pushes everything, creates a GitHub release for tags |
+| `/flow-status` | Shows current branch type, sync state, active branches, what `/finish` would do, and any drift from Git Flow conventions |
 
-## Key Features
+**One skill** (`git-flow`) loaded by the agent when the conversation touches branching decisions. The skill carries the branching diagram, the merge-target matrix, the semver-pick rules, and a list of real-world gotchas (squash-merge force-deletes, `--no-ff` discipline, push-hook workarounds, `grep -c` exit codes under `set -e`, and more).
 
-- **Branching Model**
-- **Two-Tier Command Architecture**
-- **Command Decision Table**
-- **Common Workflows**
-- **Gotchas**
-- **Environment Variables**
-- **Directory Layout**
+**One status script** (`skills/git-flow/scripts/git-flow-status.sh`) that the `/flow-status` command shells out to. Also runnable directly with `--json` for piping into other tools.
 
-## Usage
+## The branching model (ASCII version)
 
-```bash
-~/.claude/skills/git-flow/scripts/git-flow-status.sh            # Human-readable
-~/.claude/skills/git-flow/scripts/git-flow-status.sh --json     # For agent consumption
-~/.claude/skills/git-flow/scripts/git-flow-status.sh --help     # Usage
+```
+main ──────────────────────────────────────────────► (production, tagged releases)
+  │                     ▲           ▲
+  │                     │           │
+  │              release/v1.3.0  hotfix/v1.2.1
+  │                     ▲           │
+  │                     │           │
+  └──► develop ─────────┴───────────┴──────────────► (integration)
+         │         ▲
+         │         │
+         └──► feature/my-feature
 ```
 
-## Contents
-
-- **1** skill(s), **5** command(s)
-
-### Skills
-
-- `git-flow` — Git Flow branching workflow reference and status diagnostic.
-
-### Commands
-
-- `/feature` — Create a new Git Flow feature branch from develop with proper naming and tracking
-- `/release` — Create a new Git Flow release branch from develop with version bumping and changelog generation
-- `/hotfix` — Create a new Git Flow hotfix branch from main with auto-versioning
-- `/finish` — Complete and merge current Git Flow branch (feature/release/hotfix) with proper cleanup and tagging
-- `/flow-status` — Display comprehensive Git Flow status including branch type, sync status, changes, and merge targets
+| Branch | From | To | Tag? |
+|---|---|---|---|
+| `feature/*` | `develop` | `develop` | No |
+| `release/*` | `develop` | `main` + `develop` | Yes |
+| `hotfix/*` | `main` | `main` + `develop` | Yes |
 
 ## Installation
 
-### Via Claude Code (Recommended)
-
-```shell
-# Add the marketplace (one-time setup)
-/plugin marketplace add abhattacherjee/claude-code-skills
-
-# Install this plugin
-/plugin install git-flow@claude-code-skills
+```
+/plugin marketplace add abhattacherjee/git-flow
+/plugin install git-flow
 ```
 
-### Via Script
+Then run `/reload-plugins` (or restart Claude Code). The commands appear under the `git-flow:` namespace and — assuming nothing else in your install owns the same names — will also work unqualified (`/flow-status`, `/feature`, etc.).
 
-```bash
-git clone https://github.com/abhattacherjee/claude-code-skills.git /tmp/ccs
-/tmp/ccs/scripts/install-plugin.sh /tmp/ccs/plugins/git-flow
-rm -rf /tmp/ccs
+That's it. There's nothing to clone, copy, or symlink. The plugin lives in Claude Code's plugin cache at `~/.claude/plugins/cache/git-flow-repo/git-flow/<version>/`.
+
+### Updating
+
+```
+/plugin marketplace update git-flow-repo
 ```
 
-### Manual
+This pulls the latest release tag from GitHub. Pin to a specific version with `/plugin install git-flow@<version>` if you need stability over freshness.
 
-```bash
-# Copy skills
-cp -r plugins/git-flow/skills/* ~/.claude/skills/
+### Uninstalling
 
-# Copy commands
-cp plugins/git-flow/commands/*.md ~/.claude/commands/
+```
+/plugin uninstall git-flow
+/plugin marketplace remove git-flow-repo   # if you don't want to receive updates anymore
 ```
 
-## Uninstall
+## Walkthroughs
 
-```bash
-# Via Claude Code
-/plugin uninstall git-flow@claude-code-skills
+### Feature → develop
 
-# Via script
-git clone https://github.com/abhattacherjee/claude-code-skills.git /tmp/ccs
-/tmp/ccs/scripts/install-plugin.sh --uninstall /tmp/ccs/plugins/git-flow
-rm -rf /tmp/ccs
+```
+/feature user-authentication        # creates feature/user-authentication, pushes
+… write code, commit, push …
+/finish                             # merges to develop, deletes the branch
 ```
 
-## See Also
+### Planned release
 
-- **[references/override-guide.md](references/override-guide.md)** — full override guide with patterns, per-command surface, and checklist
-- `git-branch-cleanup` — audit and delete stale branches after merges
-- `changelog-keeper` — generate CHANGELOG.md from commit history
-- `release-and-git-flow` (project-level) — hook workarounds and release pipeline
+```
+/release 1.3.0                      # creates release/1.3.0, bumps versions, updates CHANGELOG
+… edit CHANGELOG entries on the release branch …
+/finish                             # merges to main + develop, tags v1.3.0, bumps develop to 1.3.1, creates GitHub release
+```
 
-## Compatibility
+### Emergency hotfix
 
-This plugin follows the **Claude Code Plugin** format. Skills use the **Agent Skills** standard recognized by:
+```
+/hotfix                             # auto-versions from latest main tag (1.2.0 → 1.2.1), branches off main
+… minimal fix, commit, push …
+/finish                             # merges to main + develop, tags, releases
+```
 
-- [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview) (Anthropic)
-- [Cursor](https://www.cursor.com/)
-- [Codex CLI](https://github.com/openai/codex) (OpenAI)
-- [Gemini CLI](https://github.com/google-gemini/gemini-cli) (Google)
+### Status check
+
+```
+/flow-status
+```
+
+Prints which branch you're on, what type it is, sync status with the remote, what `/finish` would do, and any anomalies (no `develop` branch, dirty tree, branches diverged, etc.).
+
+## Project-level overrides
+
+The five commands ship as **generic** versions that work in any Git Flow repo. When a project needs custom behavior — monorepo version-bump fan-out, push-hook workarounds, ticket-prefixed branch naming, parallel release artifacts — drop a same-name file in `.claude/commands/` at the project root. Claude Code resolves project-level commands first, falling back to the plugin version.
+
+Common reasons to override:
+
+- **Monorepo** — bump multiple `package.json` (or `pyproject.toml`, `Cargo.toml`) files in lockstep on `/release`
+- **Push hooks** — repo blocks direct pushes to `main`/`develop`, so `/finish` needs the temp-branch + `gh api` ref-patch workaround
+- **Release pipeline** — `/finish` should trigger doc generation, deploy hooks, or recommend a project-specific `/finalize-release` instead
+- **Naming conventions** — branches must be `feature/JIRA-123-description` instead of plain kebab-case
+- **Non-npm projects** — version lives in `pyproject.toml` / `Cargo.toml` / `version.txt` rather than `package.json`
+
+The `references/override-guide.md` file (shipped with this plugin, read it via the skill) documents the full override surface per command, with patterns and a checklist.
+
+## Configuration
+
+Two environment variables let you point the commands at non-default branch names:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GIT_FLOW_MAIN_BRANCH` | `main` | Production branch name |
+| `GIT_FLOW_DEVELOP_BRANCH` | `develop` | Integration branch name |
+
+## Gotchas worth knowing
+
+The skill includes detailed write-ups for these — quick summary so you know they exist:
+
+- **Squash-merged branches need `git branch -D`** (force delete). `gh pr merge --squash` creates a new commit SHA, so `-d` thinks the branch isn't merged.
+- **`--no-ff` always.** Use `git merge --no-ff` so branch history stays in the graph. Fast-forward merges erase the "this was a feature" signal.
+- **Tag filtering for semver.** `git describe --tags --abbrev=0` picks any tag. Use `git tag -l 'v[0-9]*' --sort=-v:refname | head -1` to filter to semver tags only.
+- **Push hooks may block direct pushes.** Some repos guard `main`/`develop` with pre-push hooks. The skill documents the temp-branch + `gh api` ref-patch workaround.
+- **`grep -c` returns exit 1 on zero matches**, which kills bash scripts under `set -e`. The skill includes a `count_lines` helper that handles the empty case.
+- **Stale worktrees block checkout.** `git checkout develop` failing with "already used by worktree" → `git worktree prune`.
+
+Ask the agent about any of these in conversation; the skill auto-loads when relevant.
+
+## What's in the box
+
+```
+git-flow/
+├── .claude-plugin/
+│   ├── plugin.json              # Plugin metadata (name, version, description)
+│   └── marketplace.json         # Marketplace manifest (consumed by /plugin marketplace add)
+├── commands/
+│   ├── feature.md               # /feature
+│   ├── release.md               # /release
+│   ├── hotfix.md                # /hotfix
+│   ├── finish.md                # /finish
+│   └── flow-status.md           # /flow-status
+├── skills/
+│   └── git-flow/
+│       ├── SKILL.md             # Reference + branching model + gotchas
+│       ├── scripts/
+│       │   └── git-flow-status.sh   # Diagnostic script (also: --json, --help)
+│       └── references/
+│           └── override-guide.md    # Project-level command override patterns
+├── CLAUDE.md                    # Conventions for working IN this repo (not for consumers)
+├── CHANGELOG.md                 # Keep-a-Changelog format
+├── LICENSE
+└── README.md                    # You are here
+```
+
+## See also
+
+- Companion plugins worth pairing with this one:
+  - `git-branch-cleanup` — audit and delete stale branches after merges
+  - `changelog-keeper` — generate `CHANGELOG.md` entries from commit history
+- [Original Git Flow post by Vincent Driessen](https://nvie.com/posts/a-successful-git-branching-model/)
+- [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — the format this plugin's `/release` flow assumes for `CHANGELOG.md`
+- [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## License
 
