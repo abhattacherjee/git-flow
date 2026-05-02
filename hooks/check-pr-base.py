@@ -122,6 +122,34 @@ def has_develop_branch() -> bool:
     return _run(["git", "rev-parse", "--verify", "--quiet", "develop"]) is not None
 
 
+def pr_refs_for(pr_num: str) -> Optional[tuple[str, str]]:
+    """Return (baseRefName, headRefName) for a PR number, or None on failure."""
+    raw = _run(
+        ["gh", "pr", "view", pr_num, "--json", "baseRefName,headRefName"]
+    )
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+        return (data["baseRefName"], data["headRefName"])
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def pr_for_branch(branch: str) -> Optional[str]:
+    """Resolve the open PR number for a branch name, or None if not found."""
+    raw = _run(["gh", "pr", "list", "--head", branch, "--json", "number"])
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+        if not data:
+            return None
+        return str(data[0]["number"])
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------

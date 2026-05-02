@@ -158,3 +158,35 @@ def test_has_develop_branch_false_single_trunk(temp_git_repo, monkeypatch):
     repo = temp_git_repo(branches=["main"], head="main")
     monkeypatch.chdir(repo)
     assert hook.has_develop_branch() is False
+
+
+# pr_refs_for / pr_for_branch -----------------------------------------------
+
+def test_pr_refs_for_returns_tuple(gh_stub, monkeypatch, tmp_path):
+    gh_stub('{"baseRefName":"main","headRefName":"feature/foo"}')
+    monkeypatch.chdir(tmp_path)
+    assert hook.pr_refs_for("42") == ("main", "feature/foo")
+
+
+def test_pr_refs_for_gh_failure_returns_none(gh_stub, monkeypatch, tmp_path):
+    gh_stub("", exit_code=2)
+    monkeypatch.chdir(tmp_path)
+    assert hook.pr_refs_for("42") is None
+
+
+def test_pr_refs_for_malformed_json_returns_none(gh_stub, monkeypatch, tmp_path):
+    gh_stub("not json")
+    monkeypatch.chdir(tmp_path)
+    assert hook.pr_refs_for("42") is None
+
+
+def test_pr_for_branch_returns_number(gh_stub, monkeypatch, tmp_path):
+    gh_stub('[{"number":42}]')
+    monkeypatch.chdir(tmp_path)
+    assert hook.pr_for_branch("feature/foo") == "42"
+
+
+def test_pr_for_branch_no_pr_returns_none(gh_stub, monkeypatch, tmp_path):
+    gh_stub("[]")
+    monkeypatch.chdir(tmp_path)
+    assert hook.pr_for_branch("feature/foo") is None
