@@ -1,8 +1,6 @@
 ---
 name: git-flow
 description: "Git Flow branching workflow reference and status diagnostic. Use when: (1) /flow-status or checking repository state, (2) creating feature/release/hotfix branches, (3) finishing and merging Git Flow branches, (4) understanding Git Flow conventions in any repository, (5) setting up or overriding Git Flow commands for a new project."
-metadata:
-  version: 2.1.2
 ---
 
 # Git Flow
