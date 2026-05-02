@@ -41,3 +41,35 @@ def test_expected_base_for_non_git_flow_returns_none():
     assert hook.expected_base_for("chore/xyz") is None
     assert hook.expected_base_for("") is None
     assert hook.expected_base_for("feature") is None  # no slash, not feature/*
+
+
+# parse_base_flag -----------------------------------------------------------
+
+def test_parse_base_flag_long():
+    assert hook.parse_base_flag("gh pr create --base develop --title t") == "develop"
+
+
+def test_parse_base_flag_equals_form():
+    assert hook.parse_base_flag("gh pr create --base=develop") == "develop"
+
+
+def test_parse_base_flag_short():
+    assert hook.parse_base_flag("gh pr create -B develop") == "develop"
+
+
+def test_parse_base_flag_double_quoted():
+    assert hook.parse_base_flag('gh pr create --base "develop"') == "develop"
+
+
+def test_parse_base_flag_single_quoted():
+    assert hook.parse_base_flag("gh pr create --base 'develop'") == "develop"
+
+
+def test_parse_base_flag_missing_returns_none():
+    assert hook.parse_base_flag("gh pr create --title t") is None
+
+
+def test_parse_base_flag_shell_var_returns_literal():
+    """Caller decides what to do with a $VAR value (currently: allow + warn)."""
+    assert hook.parse_base_flag('gh pr create --base "$BASE"') == "$BASE"
+    assert hook.parse_base_flag("gh pr create --base $BASE") == "$BASE"
