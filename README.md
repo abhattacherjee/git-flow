@@ -66,9 +66,12 @@ Flow branches:
 | `hotfix/*` | `main` |
 | `release/*` | `main` |
 
-Pass-through silently for non-Git-Flow branches, single-trunk repos
-(no `develop`), detached HEAD, and any `gh`/`git` failure (fail open —
-the hook never blocks legitimate work due to its own bugs).
+The hook fails open for non-Git-Flow branches, single-trunk repos (no
+`develop`), detached HEAD, and any `gh`/`git` failure — these conditions
+never block legitimate work. Diagnostic breadcrumbs may be written to
+stderr in security-relevant fail-open cases (gh failure, shell-expansion
+`--base` value) so wrong-base merges that slip through can be debugged
+post-hoc.
 
 The same matrix is enforced in-script by `verify_pr_base()` in
 `scripts/git-flow-finish.sh`, so `/finish` catches the failure even if
