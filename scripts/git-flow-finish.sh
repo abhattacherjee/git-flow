@@ -35,9 +35,19 @@ MERGE_VIA_PR=false
 # ---------------------------------------------------------------------------
 verify_pr_base() {
   local pr_num="$1" expected_base="$2"
-  local actual_base
-  actual_base=$(gh pr view "$pr_num" --json baseRefName --jq '.baseRefName' 2>/dev/null) \
-    || return 0  # gh failure: trust the hook layer to enforce
+  local actual_base gh_stderr
+  gh_stderr=$(mktemp -t verify_pr_base.XXXXXX 2>/dev/null) || gh_stderr=/dev/null
+  if ! actual_base=$(gh pr view "$pr_num" --json baseRefName --jq '.baseRefName' 2>"$gh_stderr"); then
+    # gh failure: emit a diagnostic so post-hoc forensics survive, then
+    # fail open and trust the hook layer to enforce.
+    if [[ "$gh_stderr" != "/dev/null" ]]; then
+      echo "⚠️  verify_pr_base: gh pr view #${pr_num} failed; relying on hook layer." >&2
+      [[ -s "$gh_stderr" ]] && sed 's/^/    /' "$gh_stderr" >&2
+      rm -f "$gh_stderr"
+    fi
+    return 0
+  fi
+  [[ "$gh_stderr" != "/dev/null" ]] && rm -f "$gh_stderr"
   if [[ "$actual_base" != "$expected_base" ]]; then
     cat >&2 <<EOM
 ✗ ABORTING: PR #${pr_num} has base "${actual_base}", expected "${expected_base}".

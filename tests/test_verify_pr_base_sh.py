@@ -45,3 +45,6 @@ def test_verify_fail_on_mismatch():
 def test_verify_fail_open_on_gh_error():
     result = _run_verify("42", "develop", "", gh_exit=2)
     assert result.returncode == 0  # fail open
+    # Visibility breadcrumb: gh failure should be observable in stderr.
+    assert "verify_pr_base" in result.stderr
+    assert "#42" in result.stderr
