@@ -249,7 +249,8 @@ def test_check_create_feature_missing_base_denied():
     with _patch_branch_state(branch="feature/foo"):
         d = hook.check_create("gh pr create --title t")
     assert d.allow is False
-    assert "MISSING_BASE" in d.reason or "explicit --base develop" in d.reason
+    assert "BLOCKED" in d.reason
+    assert "explicit --base develop" in d.reason
 
 
 def test_check_create_feature_wrong_base_denied():

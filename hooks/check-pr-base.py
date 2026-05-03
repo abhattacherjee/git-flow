@@ -10,7 +10,10 @@ Git Flow base-branch matrix:
 Reads PreToolUse JSON from stdin. Emits a deny payload to stdout when the
 command would create or merge a PR with the wrong base; exits 0 otherwise.
 
-Always exits 0 (success) — even on internal exceptions, fails open.
+Exit code is always 0 — the deny decision is conveyed via JSON on stdout
+(PreToolUse's `permissionDecision` contract), not via exit code. Internal
+exceptions fall through to a no-op (fail open) so a hook bug never blocks
+legitimate work.
 Spec: docs/superpowers/specs/2026-05-02-pr-base-enforcement-design.md
 """
 from __future__ import annotations
@@ -62,7 +65,10 @@ def parse_base_flag(cmd: str) -> Optional[str]:
     return m.group("quoted") or m.group("bare")
 
 
-# Match "gh pr merge" followed by a PR number or GitHub PR URL. Skips flags.
+# Match a whitespace-isolated integer (e.g. "42") or a /pull/<n> URL fragment.
+# Whitespace lookarounds reject digits adjacent to non-whitespace, which
+# happens to skip most flag tokens (--commit-id=abc123, etc.). Does NOT
+# actively parse flags — see issue tracker for shlex-based hardening.
 _PR_NUM_RE = re.compile(r"/pull/(\d+)|(?<!\S)(\d+)(?!\S)")
 
 
@@ -293,9 +299,11 @@ def check_merge(cmd: str) -> Decision:
     return Decision(allow=True)
 
 
-# Word-boundary patterns: avoid matching 'gh pr create' inside quoted strings.
-# We require 'gh pr create' / 'gh pr merge' to be at start-of-segment after
-# trimming whitespace, OR preceded by typical shell separators.
+# Anchor: 'gh pr create'/'gh pr merge' must be at segment start or preceded by
+# a shell separator/whitespace. This catches the common quoted-string false
+# positive (echo "gh pr create ..."), but is NOT quote-aware — heredocs and
+# unquoted argument contexts (echo gh pr create) can still match. Acceptable
+# trade-off because the hook fails open on any validation error downstream.
 _GH_PR_CREATE_RE = re.compile(r"(?:^|[\s;&|])gh\s+pr\s+create\b")
 _GH_PR_MERGE_RE = re.compile(r"(?:^|[\s;&|])gh\s+pr\s+merge\b")
 
