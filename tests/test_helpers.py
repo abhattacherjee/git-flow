@@ -314,3 +314,55 @@ def test_check_create_draft_missing_base_denied():
     with _patch_branch_state(branch="feature/foo"):
         d = hook.check_create("gh pr create --draft --title t")
     assert d.allow is False
+
+
+# check_merge ---------------------------------------------------------------
+
+def _patch_pr_state(*, refs):
+    """Patch pr_refs_for to return a fixed (base, head) tuple, or None."""
+    return patch.object(hook, "pr_refs_for", lambda pr_num: refs)
+
+
+def test_check_merge_wrong_base_denied():
+    with _patch_pr_state(refs=("main", "feature/foo")):
+        d = hook.check_merge("gh pr merge 42 --squash")
+    assert d.allow is False
+    assert "PR #42" in d.reason
+    assert "main" in d.reason
+    assert "develop" in d.reason
+    assert "gh pr edit 42 --base develop" in d.reason
+
+
+def test_check_merge_correct_base_allowed():
+    with _patch_pr_state(refs=("develop", "feature/foo")):
+        d = hook.check_merge("gh pr merge 42")
+    assert d.allow is True
+
+
+def test_check_merge_release_to_main_allowed():
+    with _patch_pr_state(refs=("main", "release/v1.0")):
+        d = hook.check_merge("gh pr merge 7")
+    assert d.allow is True
+
+
+def test_check_merge_gh_failure_fails_open():
+    with _patch_pr_state(refs=None):
+        d = hook.check_merge("gh pr merge 42")
+    assert d.allow is True
+
+
+def test_check_merge_no_pr_number_resolves_via_branch(monkeypatch):
+    """When PR number is omitted, use pr_for_branch + current_branch."""
+    monkeypatch.setattr(hook, "current_branch", lambda: "feature/foo")
+    monkeypatch.setattr(hook, "pr_for_branch", lambda b: "99")
+    monkeypatch.setattr(hook, "pr_refs_for", lambda n: ("main", "feature/foo"))
+    d = hook.check_merge("gh pr merge --squash")
+    assert d.allow is False
+    assert "PR #99" in d.reason
+
+
+def test_check_merge_non_git_flow_head_allowed():
+    """If the PR's headRefName is not Git Flow, pass through."""
+    with _patch_pr_state(refs=("main", "chore/foo")):
+        d = hook.check_merge("gh pr merge 42")
+    assert d.allow is True

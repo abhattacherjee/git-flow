@@ -259,6 +259,40 @@ def check_create(cmd: str) -> Decision:
     return Decision(allow=True)
 
 
+def check_merge(cmd: str) -> Decision:
+    """Validate a single `gh pr merge ...` command segment."""
+    pr_num = parse_pr_number(cmd)
+    if pr_num is None:
+        # gh resolves from current branch when the number is omitted.
+        branch = current_branch()
+        if branch is None:
+            return Decision(allow=True)
+        pr_num = pr_for_branch(branch)
+        if pr_num is None:
+            return Decision(allow=True)  # gh would fail naturally
+
+    refs = pr_refs_for(pr_num)
+    if refs is None:
+        return Decision(allow=True)  # gh failure — fail open
+    actual_base, head = refs
+
+    expected = expected_base_for(head)
+    if expected is None:
+        return Decision(allow=True)  # PR is not from a Git Flow branch
+
+    if actual_base != expected:
+        return Decision(
+            allow=False,
+            reason=diag_wrong_base_pr(
+                pr_num=pr_num,
+                actual=actual_base,
+                expected=expected,
+                branch_type=_branch_type_label(head),
+            ),
+        )
+    return Decision(allow=True)
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
