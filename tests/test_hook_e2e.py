@@ -177,3 +177,19 @@ def test_internal_exception_fails_open(temp_git_repo, gh_stub, run_hook):
     assert proc.returncode == 0
     assert proc.stdout == ""
     assert "Traceback" in proc.stderr or proc.stderr  # any stderr output is fine
+
+
+# 18 — Copilot review feedback: hotfix missing base
+def test_create_hotfix_missing_base_blocked(temp_git_repo, gh_stub, run_hook):
+    repo = temp_git_repo(branches=["main", "develop", "hotfix/v1.0.1"], head="hotfix/v1.0.1")
+    code, out, err = run_hook(_payload("gh pr create --title test"), repo)
+    assert code == 0
+    _assert_deny(out, "BLOCKED", "hotfix/*", "explicit --base main")
+
+
+# 19 — Copilot review feedback: release missing base
+def test_create_release_missing_base_blocked(temp_git_repo, gh_stub, run_hook):
+    repo = temp_git_repo(branches=["main", "develop", "release/v1.0"], head="release/v1.0")
+    code, out, err = run_hook(_payload("gh pr create --title test"), repo)
+    assert code == 0
+    _assert_deny(out, "BLOCKED", "release/*", "explicit --base main")

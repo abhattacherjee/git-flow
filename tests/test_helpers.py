@@ -285,6 +285,22 @@ def test_check_create_release_develop_denied():
     assert d.allow is False
 
 
+def test_check_create_hotfix_missing_base_denied():
+    with _patch_branch_state(branch="hotfix/v1.0.1"):
+        d = hook.check_create("gh pr create --title t")
+    assert d.allow is False
+    assert "BLOCKED" in d.reason
+    assert "explicit --base main" in d.reason
+
+
+def test_check_create_release_missing_base_denied():
+    with _patch_branch_state(branch="release/v1.0"):
+        d = hook.check_create("gh pr create --title t")
+    assert d.allow is False
+    assert "BLOCKED" in d.reason
+    assert "explicit --base main" in d.reason
+
+
 def test_check_create_non_git_flow_branch_allowed():
     with _patch_branch_state(branch="chore/cleanup"):
         d = hook.check_create("gh pr create --base main --title t")
