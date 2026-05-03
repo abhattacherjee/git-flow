@@ -27,6 +27,44 @@ MERGE_VIA_PR=false
 
 # ── Functions ──────────────────────────────────────────────────────
 
+# ---------------------------------------------------------------------------
+# verify_pr_base — abort if a PR's baseRefName does not match the expected base.
+# Layer 2 of the PR base-branch enforcement (Layer 1 is hooks/check-pr-base.py).
+# Fails open on gh errors so the hook layer remains the source of truth.
+# Spec: docs/superpowers/specs/2026-05-02-pr-base-enforcement-design.md
+# ---------------------------------------------------------------------------
+verify_pr_base() {
+  local pr_num="$1" expected_base="$2"
+  local actual_base gh_stderr
+  gh_stderr=$(mktemp "${TMPDIR:-/tmp}/verify_pr_base.XXXXXX" 2>/dev/null) || gh_stderr=/dev/null
+  if ! actual_base=$(gh pr view "$pr_num" --json baseRefName --jq '.baseRefName' 2>"$gh_stderr"); then
+    # gh failure: emit a diagnostic so post-hoc forensics survive, then
+    # fail open and trust the hook layer to enforce. Header prints
+    # unconditionally so the breadcrumb is visible even when mktemp failed.
+    echo "⚠️  verify_pr_base: gh pr view #${pr_num} failed; relying on hook layer." >&2
+    if [[ "$gh_stderr" != "/dev/null" && -s "$gh_stderr" ]]; then
+      sed 's/^/    /' "$gh_stderr" >&2
+    elif [[ "$gh_stderr" == "/dev/null" ]]; then
+      echo "    (gh stderr unavailable: mktemp failed)" >&2
+    fi
+    [[ "$gh_stderr" != "/dev/null" ]] && rm -f "$gh_stderr"
+    return 0
+  fi
+  [[ "$gh_stderr" != "/dev/null" ]] && rm -f "$gh_stderr"
+  if [[ "$actual_base" != "$expected_base" ]]; then
+    cat >&2 <<EOM
+✗ ABORTING: PR #${pr_num} has base "${actual_base}", expected "${expected_base}".
+Feature/hotfix/release branches must merge to ${expected_base} per Git Flow.
+
+To fix:
+  gh pr edit ${pr_num} --base ${expected_base}
+
+Then re-run /finish.
+EOM
+    return 1
+  fi
+}
+
 usage() {
   cat <<'USAGE'
 Usage: git-flow-finish.sh <branch-type> <version> [options]
@@ -212,6 +250,7 @@ EOF
   # Squash merge PR — combines all commits into a single commit on main.
   # Release notes are captured via GitHub Release (from CHANGELOG.md),
   # not from the merge commit message, so squash is safe here.
+  verify_pr_base "$PR_NUMBER" "main" || exit 2
   gh pr merge "$PR_NUMBER" \
     --repo "$REPO" \
     --squash \
@@ -226,6 +265,9 @@ EOF
 
   MERGE_VIA_PR=true
 }
+
+# Allow the file to be sourced for testing without invoking the main flow.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
 # ── Parse Arguments ────────────────────────────────────────────────
 
@@ -497,3 +539,5 @@ if $DRY_RUN; then
   echo "  [DRY RUN — no changes were made]"
   echo ""
 fi
+
+fi  # end: if [[ "${BASH_SOURCE[0]}" == "${0}" ]]

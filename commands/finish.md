@@ -64,6 +64,20 @@ gh pr merge $PR_NUMBER --squash --delete-branch
 git checkout develop && git pull origin develop
 ```
 
+> **Safety check:** Before invoking `gh pr merge`, `/finish` and the
+> plugin-bundled `check-pr-base` hook both verify the PR's `baseRefName`
+> matches the expected base for the branch type:
+>
+> | Branch | Required base |
+> | --- | --- |
+> | `feature/*` | `develop` |
+> | `hotfix/*` | `main` |
+> | `release/*` | `main` |
+>
+> A wrong-base PR is blocked with a `gh pr edit <N> --base <expected>`
+> remediation hint. The same hook also blocks `gh pr create` invocations
+> on Git Flow branches that omit `--base` or pass the wrong base.
+
 #### Local fallback (when no PR exists)
 
 ```bash
