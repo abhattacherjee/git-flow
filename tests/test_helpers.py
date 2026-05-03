@@ -366,3 +366,36 @@ def test_check_merge_non_git_flow_head_allowed():
     with _patch_pr_state(refs=("main", "chore/foo")):
         d = hook.check_merge("gh pr merge 42")
     assert d.allow is True
+
+
+# dispatch ------------------------------------------------------------------
+
+def test_dispatch_unrelated_command_allows():
+    d = hook.dispatch("echo hello")
+    assert d.allow is True
+
+
+def test_dispatch_quoted_echo_does_not_match(monkeypatch):
+    """Word-boundary regex: 'gh pr create' inside a quoted echo is not a match."""
+    # Even if branch is feature/*, the command shouldn't be parsed as gh pr create.
+    monkeypatch.setattr(hook, "current_branch", lambda: "feature/foo")
+    monkeypatch.setattr(hook, "has_develop_branch", lambda: True)
+    d = hook.dispatch('echo "gh pr create --base main"')
+    assert d.allow is True
+
+
+def test_dispatch_chained_validates_first_failing_segment(monkeypatch):
+    monkeypatch.setattr(hook, "current_branch", lambda: "feature/foo")
+    monkeypatch.setattr(hook, "has_develop_branch", lambda: True)
+    d = hook.dispatch("gh pr create --base main --title t && echo done")
+    assert d.allow is False
+
+
+def test_dispatch_gh_pr_view_subcommand_passthrough():
+    d = hook.dispatch("gh pr view 42")
+    assert d.allow is True
+
+
+def test_dispatch_gh_pr_edit_subcommand_passthrough():
+    d = hook.dispatch("gh pr edit 42 --base develop")
+    assert d.allow is True

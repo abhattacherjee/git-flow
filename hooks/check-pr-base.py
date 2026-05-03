@@ -293,15 +293,57 @@ def check_merge(cmd: str) -> Decision:
     return Decision(allow=True)
 
 
+# Word-boundary patterns: avoid matching 'gh pr create' inside quoted strings.
+# We require 'gh pr create' / 'gh pr merge' to be at start-of-segment after
+# trimming whitespace, OR preceded by typical shell separators.
+_GH_PR_CREATE_RE = re.compile(r"(?:^|[\s;&|])gh\s+pr\s+create\b")
+_GH_PR_MERGE_RE = re.compile(r"(?:^|[\s;&|])gh\s+pr\s+merge\b")
+
+
+def dispatch(cmd: str) -> Decision:
+    """Validate every gh pr create/merge segment in a command chain."""
+    for segment in split_command_chain(cmd):
+        seg = " " + segment  # prepend space so ^ regex still anchors at boundary
+        if _GH_PR_CREATE_RE.search(seg):
+            d = check_create(segment)
+            if not d.allow:
+                return d
+        elif _GH_PR_MERGE_RE.search(seg):
+            d = check_merge(segment)
+            if not d.allow:
+                return d
+    return Decision(allow=True)
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
 def main() -> None:
     try:
-        json.load(sys.stdin)
+        payload = json.load(sys.stdin)
+        cmd = payload.get("tool_input", {}).get("command", "")
+        decision = dispatch(cmd)
     except Exception:
-        pass
+        # Hook bug or malformed payload — fail open with traceback to stderr.
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(0)
+
+    if decision.allow:
+        sys.exit(0)
+
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": decision.reason,
+                }
+            }
+        )
+    )
     sys.exit(0)
 
 
