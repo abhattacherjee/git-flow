@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -122,11 +123,6 @@ def test_split_chain_or():
 def test_split_chain_mixed():
     parts = hook.split_command_chain("a && b ; c || d")
     assert [p.strip() for p in parts] == ["a", "b", "c", "d"]
-
-
-import subprocess
-import tempfile
-import os
 
 
 # current_branch / has_develop_branch ---------------------------------------
