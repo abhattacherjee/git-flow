@@ -190,3 +190,42 @@ def test_pr_for_branch_no_pr_returns_none(gh_stub, monkeypatch, tmp_path):
     gh_stub("[]")
     monkeypatch.chdir(tmp_path)
     assert hook.pr_for_branch("feature/foo") is None
+
+
+# Decision dataclass --------------------------------------------------------
+
+def test_decision_allow_default():
+    d = hook.Decision(allow=True)
+    assert d.allow is True
+    assert d.reason == ""
+
+
+def test_decision_deny_with_reason():
+    d = hook.Decision(allow=False, reason="oops")
+    assert d.allow is False
+    assert d.reason == "oops"
+
+
+# Diagnostic templates ------------------------------------------------------
+
+def test_diagnostic_wrong_base_pr_exists():
+    msg = hook.diag_wrong_base_pr(pr_num="42", actual="main", expected="develop", branch_type="feature")
+    assert "PR #42" in msg
+    assert "ABORTING" in msg
+    assert 'has base "main"' in msg
+    assert 'expected "develop"' in msg
+    assert "gh pr edit 42 --base develop" in msg
+
+
+def test_diagnostic_wrong_base_create():
+    msg = hook.diag_wrong_base_create(actual="main", expected="develop", branch_type="feature", rest_of_args="--title t")
+    assert "BLOCKED" in msg
+    assert "feature" in msg
+    assert "gh pr create --base develop --title t" in msg
+
+
+def test_diagnostic_missing_base_create():
+    msg = hook.diag_missing_base_create(expected="develop", branch_type="feature", rest_of_args="--title t")
+    assert "BLOCKED" in msg
+    assert "explicit --base develop" in msg
+    assert "gh pr create --base develop --title t" in msg

@@ -19,6 +19,7 @@ import json
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -152,6 +153,45 @@ def pr_for_branch(branch: str) -> Optional[str]:
         return str(data[0]["number"])
     except (json.JSONDecodeError, KeyError, IndexError, TypeError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Decision + diagnostic templates
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Decision:
+    allow: bool
+    reason: str = ""
+
+
+def diag_wrong_base_pr(*, pr_num: str, actual: str, expected: str, branch_type: str) -> str:
+    return (
+        f'✗ ABORTING: PR #{pr_num} has base "{actual}", expected "{expected}".\n'
+        f"{branch_type} branches must merge to {expected}, not {actual}.\n\n"
+        f"To fix:\n"
+        f"  gh pr edit {pr_num} --base {expected}\n\n"
+        f"Then re-run."
+    )
+
+
+def diag_wrong_base_create(*, actual: str, expected: str, branch_type: str, rest_of_args: str) -> str:
+    return (
+        f'✗ BLOCKED: cannot create {branch_type} PR with --base "{actual}".\n'
+        f"{branch_type} branches must merge to {expected} per Git Flow.\n\n"
+        f"To fix, re-run with:\n"
+        f"  gh pr create --base {expected} {rest_of_args}".rstrip()
+    )
+
+
+def diag_missing_base_create(*, expected: str, branch_type: str, rest_of_args: str) -> str:
+    return (
+        f"✗ BLOCKED: gh pr create on {branch_type} branch requires explicit --base {expected}.\n\n"
+        f"The repo default branch is typically main, which would silently create a wrong-base PR.\n"
+        f"Always pass --base explicitly per Git Flow.\n\n"
+        f"To fix, re-run with:\n"
+        f"  gh pr create --base {expected} {rest_of_args}".rstrip()
+    )
 
 
 # ---------------------------------------------------------------------------
