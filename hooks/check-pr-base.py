@@ -105,7 +105,7 @@ def _run(cmd: list[str], timeout: float = 5.0) -> Optional[str]:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, check=False
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, UnicodeDecodeError):
         return None
     if result.returncode != 0:
         return None
@@ -125,7 +125,8 @@ def has_develop_branch() -> bool:
 def pr_refs_for(pr_num: str) -> Optional[tuple[str, str]]:
     """Return (baseRefName, headRefName) for a PR number, or None on failure."""
     raw = _run(
-        ["gh", "pr", "view", pr_num, "--json", "baseRefName,headRefName"]
+        ["gh", "pr", "view", pr_num, "--json", "baseRefName,headRefName"],
+        timeout=10.0,
     )
     if raw is None:
         return None
@@ -138,7 +139,10 @@ def pr_refs_for(pr_num: str) -> Optional[tuple[str, str]]:
 
 def pr_for_branch(branch: str) -> Optional[str]:
     """Resolve the open PR number for a branch name, or None if not found."""
-    raw = _run(["gh", "pr", "list", "--head", branch, "--json", "number"])
+    raw = _run(
+        ["gh", "pr", "list", "--head", branch, "--json", "number"],
+        timeout=10.0,
+    )
     if raw is None:
         return None
     try:
