@@ -229,3 +229,88 @@ def test_diagnostic_missing_base_create():
     assert "BLOCKED" in msg
     assert "explicit --base develop" in msg
     assert "gh pr create --base develop --title t" in msg
+
+
+from unittest.mock import patch
+
+
+# check_create --------------------------------------------------------------
+
+def _patch_branch_state(*, branch, has_develop=True):
+    """Convenience: patch both shell wrappers with a single context manager."""
+    return patch.multiple(
+        hook,
+        current_branch=lambda: branch,
+        has_develop_branch=lambda: has_develop,
+    )
+
+
+def test_check_create_feature_missing_base_denied():
+    with _patch_branch_state(branch="feature/foo"):
+        d = hook.check_create("gh pr create --title t")
+    assert d.allow is False
+    assert "MISSING_BASE" in d.reason or "explicit --base develop" in d.reason
+
+
+def test_check_create_feature_wrong_base_denied():
+    with _patch_branch_state(branch="feature/foo"):
+        d = hook.check_create("gh pr create --base main --title t")
+    assert d.allow is False
+    assert "main" in d.reason
+    assert "develop" in d.reason
+
+
+def test_check_create_feature_correct_base_allowed():
+    with _patch_branch_state(branch="feature/foo"):
+        d = hook.check_create("gh pr create --base develop --title t")
+    assert d.allow is True
+
+
+def test_check_create_hotfix_main_allowed():
+    with _patch_branch_state(branch="hotfix/v1.0.1"):
+        d = hook.check_create("gh pr create --base main --title t")
+    assert d.allow is True
+
+
+def test_check_create_hotfix_develop_denied():
+    with _patch_branch_state(branch="hotfix/v1.0.1"):
+        d = hook.check_create("gh pr create --base develop --title t")
+    assert d.allow is False
+
+
+def test_check_create_release_develop_denied():
+    with _patch_branch_state(branch="release/v1.0"):
+        d = hook.check_create("gh pr create --base develop --title t")
+    assert d.allow is False
+
+
+def test_check_create_non_git_flow_branch_allowed():
+    with _patch_branch_state(branch="chore/cleanup"):
+        d = hook.check_create("gh pr create --base main --title t")
+    assert d.allow is True
+
+
+def test_check_create_detached_head_allowed():
+    with _patch_branch_state(branch=None):
+        d = hook.check_create("gh pr create --title t")
+    assert d.allow is True
+
+
+def test_check_create_single_trunk_repo_allowed():
+    with _patch_branch_state(branch="feature/foo", has_develop=False):
+        d = hook.check_create("gh pr create --title t")
+    assert d.allow is True
+
+
+def test_check_create_shell_var_base_allowed_with_warn(capsys):
+    with _patch_branch_state(branch="feature/foo"):
+        d = hook.check_create("gh pr create --base $BASE")
+    assert d.allow is True
+    captured = capsys.readouterr()
+    assert "$BASE" in captured.err  # warning written to stderr
+
+
+def test_check_create_draft_missing_base_denied():
+    with _patch_branch_state(branch="feature/foo"):
+        d = hook.check_create("gh pr create --draft --title t")
+    assert d.allow is False

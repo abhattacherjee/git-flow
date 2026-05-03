@@ -195,6 +195,71 @@ def diag_missing_base_create(*, expected: str, branch_type: str, rest_of_args: s
 
 
 # ---------------------------------------------------------------------------
+# Subcommand handlers
+# ---------------------------------------------------------------------------
+
+def _branch_type_label(branch: str) -> str:
+    """e.g. 'feature/foo' -> 'feature/*'. Used in diagnostic messages."""
+    if "/" in branch:
+        return branch.split("/", 1)[0] + "/*"
+    return branch
+
+
+def _strip_create_args_for_remediation(cmd: str) -> str:
+    """Strip 'gh pr create' and any --base/-B flag from cmd, leaving the rest."""
+    s = cmd
+    idx = s.find("gh pr create")
+    if idx >= 0:
+        s = s[idx + len("gh pr create"):].strip()
+    s = _BASE_FLAG_RE.sub("", s).strip()
+    return s
+
+
+def check_create(cmd: str) -> Decision:
+    """Validate a single `gh pr create ...` command segment."""
+    branch = current_branch()
+    if branch is None:
+        return Decision(allow=True)  # detached HEAD — pass through
+
+    expected = expected_base_for(branch)
+    if expected is None:
+        return Decision(allow=True)  # not Git Flow — pass through
+
+    # Single-trunk repo without 'develop' is not a Git Flow repo even if the
+    # branch happens to start with 'feature/'. Pass-through.
+    if expected == "develop" and not has_develop_branch():
+        return Decision(allow=True)
+
+    actual = parse_base_flag(cmd)
+    rest = _strip_create_args_for_remediation(cmd)
+    branch_type = _branch_type_label(branch)
+
+    if actual is None:
+        return Decision(
+            allow=False,
+            reason=diag_missing_base_create(
+                expected=expected, branch_type=branch_type, rest_of_args=rest
+            ),
+        )
+    if actual.startswith("$"):
+        # Shell expansion — can't evaluate. Allow + warn.
+        print(
+            f"⚠️  check-pr-base: --base value is shell expansion ({actual}); "
+            f"skipping enforcement. Verify the resolved base is '{expected}'.",
+            file=sys.stderr,
+        )
+        return Decision(allow=True)
+    if actual != expected:
+        return Decision(
+            allow=False,
+            reason=diag_wrong_base_create(
+                actual=actual, expected=expected, branch_type=branch_type, rest_of_args=rest
+            ),
+        )
+    return Decision(allow=True)
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
