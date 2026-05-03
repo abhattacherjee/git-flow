@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- PR base-branch enforcement (#1):
+  - New `hooks/check-pr-base.py` PreToolUse hook blocks wrong-base
+    `gh pr create` and `gh pr merge` invocations on Git Flow branches
+    (`feature/*`→develop, `hotfix/*`→main, `release/*`→main).
+  - New `verify_pr_base()` function in `scripts/git-flow-finish.sh`
+    provides defense-in-depth before any in-script `gh pr merge` call.
+  - Pass-through for non-Git-Flow branches, single-trunk repos, and any
+    `gh`/`git` error (fail open).
+
 ## [2.1.3] - 2026-05-02
 
 ### Removed

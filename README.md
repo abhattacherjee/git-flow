@@ -50,6 +50,30 @@ Then run `/reload-plugins` (or restart Claude Code). The commands appear under t
 
 That's it. There's nothing to clone, copy, or symlink. The plugin lives in Claude Code's plugin cache at `~/.claude/plugins/cache/git-flow-repo/git-flow/<version>/`.
 
+### Quality gates
+
+The plugin ships a `PreToolUse` Bash hook (`hooks/check-pr-base.py`) that
+auto-activates on install. It blocks two categories of mistake on Git
+Flow branches:
+
+1. `gh pr create` without `--base`, or with the wrong `--base`.
+2. `gh pr merge` against a PR whose `baseRefName` does not match the
+   branch-type matrix below.
+
+| Branch | Required base |
+| --- | --- |
+| `feature/*` | `develop` |
+| `hotfix/*` | `main` |
+| `release/*` | `main` |
+
+Pass-through silently for non-Git-Flow branches, single-trunk repos
+(no `develop`), detached HEAD, and any `gh`/`git` failure (fail open —
+the hook never blocks legitimate work due to its own bugs).
+
+The same matrix is enforced in-script by `verify_pr_base()` in
+`scripts/git-flow-finish.sh`, so `/finish` catches the failure even if
+the hook is somehow disabled.
+
 ### Updating
 
 ```
