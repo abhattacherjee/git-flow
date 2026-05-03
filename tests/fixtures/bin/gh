@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Test stub for `gh`. Reads MOCK_GH_STDOUT and MOCK_GH_EXIT from env.
-# Default: prints nothing, exits 0.
+# Test stub for `gh`. Reads MOCK_GH_STDOUT, MOCK_GH_STDERR, MOCK_GH_EXIT
+# from env. Default: prints nothing, exits 0.
 
 if [[ -n "${MOCK_GH_STDOUT:-}" ]]; then
   printf '%s' "$MOCK_GH_STDOUT"
+fi
+if [[ -n "${MOCK_GH_STDERR:-}" ]]; then
+  printf '%s' "$MOCK_GH_STDERR" >&2
 fi
 exit "${MOCK_GH_EXIT:-0}"

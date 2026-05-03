@@ -48,3 +48,23 @@ def test_verify_fail_open_on_gh_error():
     # Visibility breadcrumb: gh failure should be observable in stderr.
     assert "verify_pr_base" in result.stderr
     assert "#42" in result.stderr
+
+
+def test_verify_fail_open_includes_indented_gh_stderr():
+    """When gh fails AND prints to stderr, the breadcrumb re-emits it indented."""
+    body = textwrap.dedent(f"""
+        source "{SCRIPT}"
+        verify_pr_base "42" "develop"
+    """)
+    env = os.environ.copy()
+    env["PATH"] = f"{REPO_ROOT}/tests/fixtures/bin:{env['PATH']}"
+    env["MOCK_GH_STDOUT"] = ""
+    env["MOCK_GH_STDERR"] = "HTTP 401: Bad credentials"
+    env["MOCK_GH_EXIT"] = "2"
+    result = subprocess.run(
+        ["bash", "-c", body], capture_output=True, text=True, env=env, timeout=10
+    )
+    assert result.returncode == 0  # fail open
+    # Both the breadcrumb header AND the indented gh-stderr re-emit must be visible.
+    assert "verify_pr_base" in result.stderr
+    assert "    HTTP 401: Bad credentials" in result.stderr  # 4-space indent

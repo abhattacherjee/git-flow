@@ -39,12 +39,15 @@ verify_pr_base() {
   gh_stderr=$(mktemp -t verify_pr_base.XXXXXX 2>/dev/null) || gh_stderr=/dev/null
   if ! actual_base=$(gh pr view "$pr_num" --json baseRefName --jq '.baseRefName' 2>"$gh_stderr"); then
     # gh failure: emit a diagnostic so post-hoc forensics survive, then
-    # fail open and trust the hook layer to enforce.
-    if [[ "$gh_stderr" != "/dev/null" ]]; then
-      echo "⚠️  verify_pr_base: gh pr view #${pr_num} failed; relying on hook layer." >&2
-      [[ -s "$gh_stderr" ]] && sed 's/^/    /' "$gh_stderr" >&2
-      rm -f "$gh_stderr"
+    # fail open and trust the hook layer to enforce. Header prints
+    # unconditionally so the breadcrumb is visible even when mktemp failed.
+    echo "⚠️  verify_pr_base: gh pr view #${pr_num} failed; relying on hook layer." >&2
+    if [[ "$gh_stderr" != "/dev/null" && -s "$gh_stderr" ]]; then
+      sed 's/^/    /' "$gh_stderr" >&2
+    elif [[ "$gh_stderr" == "/dev/null" ]]; then
+      echo "    (gh stderr unavailable: mktemp failed)" >&2
     fi
+    [[ "$gh_stderr" != "/dev/null" ]] && rm -f "$gh_stderr"
     return 0
   fi
   [[ "$gh_stderr" != "/dev/null" ]] && rm -f "$gh_stderr"
