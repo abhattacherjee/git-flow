@@ -19,6 +19,7 @@ Spec: docs/superpowers/specs/2026-05-02-pr-base-enforcement-design.md
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -101,16 +102,46 @@ def split_command_chain(cmd: str) -> list[str]:
     return [part for part in _CHAIN_RE.split(cmd) if part]
 
 
+# Extract a leading `cd <path>` from a command chain so we can run git/gh in
+# the right directory. Mirrors the pattern in .claude/hooks/prevent-direct-push.py.
+# Handles quoted paths and ~/$VAR expansions via os.path.expanduser/expandvars.
+_CD_PREFIX_RE = re.compile(
+    r"""(?:^|[;&|]\s*)        # at start of command or after a connector
+        cd\s+
+        (?:'(?P<sq>[^']+)'    # single-quoted path
+          |"(?P<dq>[^"]+)"    # double-quoted path
+          |(?P<bare>\S+))     # or bare (no whitespace)
+    """,
+    re.VERBOSE,
+)
+
+
+def extract_cwd(cmd: str) -> Optional[str]:
+    """Return the first `cd <path>` target in the command, or None.
+
+    Performs ~ and $VAR expansion. Returns None if no cd prefix found, or if
+    the expanded path doesn't exist (caller should fall back to default CWD).
+    """
+    m = _CD_PREFIX_RE.search(cmd)
+    if not m:
+        return None
+    path = m.group("sq") or m.group("dq") or m.group("bare")
+    path = os.path.expanduser(os.path.expandvars(path))
+    if not os.path.isdir(path):
+        return None
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Shell I/O wrappers — tests can patch these or use temp_git_repo / gh_stub.
 # All wrappers fail open: any non-zero exit or exception returns None / False.
 # ---------------------------------------------------------------------------
 
-def _run(cmd: list[str], timeout: float = 5.0) -> Optional[str]:
+def _run(cmd: list[str], timeout: float = 5.0, cwd: Optional[str] = None) -> Optional[str]:
     """Run a command; return stdout stripped, or None on any failure."""
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, check=False
+            cmd, capture_output=True, text=True, timeout=timeout, check=False, cwd=cwd
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError, UnicodeDecodeError):
         return None
@@ -119,21 +150,22 @@ def _run(cmd: list[str], timeout: float = 5.0) -> Optional[str]:
     return result.stdout.strip()
 
 
-def current_branch() -> Optional[str]:
+def current_branch(cwd: Optional[str] = None) -> Optional[str]:
     """Return the current branch name, or None on detached HEAD / git failure."""
-    return _run(["git", "symbolic-ref", "--short", "HEAD"])
+    return _run(["git", "symbolic-ref", "--short", "HEAD"], cwd=cwd)
 
 
-def has_develop_branch() -> bool:
+def has_develop_branch(cwd: Optional[str] = None) -> bool:
     """Return True if the local repo has a 'develop' branch."""
-    return _run(["git", "rev-parse", "--verify", "--quiet", "develop"]) is not None
+    return _run(["git", "rev-parse", "--verify", "--quiet", "develop"], cwd=cwd) is not None
 
 
-def pr_refs_for(pr_num: str) -> Optional[tuple[str, str]]:
+def pr_refs_for(pr_num: str, cwd: Optional[str] = None) -> Optional[tuple[str, str]]:
     """Return (baseRefName, headRefName) for a PR number, or None on failure."""
     raw = _run(
         ["gh", "pr", "view", pr_num, "--json", "baseRefName,headRefName"],
         timeout=10.0,
+        cwd=cwd,
     )
     if raw is None:
         return None
@@ -144,11 +176,12 @@ def pr_refs_for(pr_num: str) -> Optional[tuple[str, str]]:
         return None
 
 
-def pr_for_branch(branch: str) -> Optional[str]:
+def pr_for_branch(branch: str, cwd: Optional[str] = None) -> Optional[str]:
     """Resolve the open PR number for a branch name, or None if not found."""
     raw = _run(
         ["gh", "pr", "list", "--head", branch, "--json", "number"],
         timeout=10.0,
+        cwd=cwd,
     )
     if raw is None:
         return None
@@ -221,9 +254,9 @@ def _strip_create_args_for_remediation(cmd: str) -> str:
     return s
 
 
-def check_create(cmd: str) -> Decision:
+def check_create(cmd: str, cwd: Optional[str] = None) -> Decision:
     """Validate a single `gh pr create ...` command segment."""
-    branch = current_branch()
+    branch = current_branch(cwd=cwd)
     if branch is None:
         return Decision(allow=True)  # detached HEAD — pass through
 
@@ -233,7 +266,7 @@ def check_create(cmd: str) -> Decision:
 
     # Single-trunk repo without 'develop' is not a Git Flow repo even if the
     # branch happens to start with 'feature/'. Pass-through.
-    if expected == "develop" and not has_develop_branch():
+    if expected == "develop" and not has_develop_branch(cwd=cwd):
         return Decision(allow=True)
 
     actual = parse_base_flag(cmd)
@@ -265,19 +298,19 @@ def check_create(cmd: str) -> Decision:
     return Decision(allow=True)
 
 
-def check_merge(cmd: str) -> Decision:
+def check_merge(cmd: str, cwd: Optional[str] = None) -> Decision:
     """Validate a single `gh pr merge ...` command segment."""
     pr_num = parse_pr_number(cmd)
     if pr_num is None:
         # gh resolves from current branch when the number is omitted.
-        branch = current_branch()
+        branch = current_branch(cwd=cwd)
         if branch is None:
             return Decision(allow=True)
-        pr_num = pr_for_branch(branch)
+        pr_num = pr_for_branch(branch, cwd=cwd)
         if pr_num is None:
             return Decision(allow=True)  # gh would fail naturally
 
-    refs = pr_refs_for(pr_num)
+    refs = pr_refs_for(pr_num, cwd=cwd)
     if refs is None:
         return Decision(allow=True)  # gh failure — fail open
     actual_base, head = refs
@@ -310,14 +343,15 @@ _GH_PR_MERGE_RE = re.compile(r"(?:^|[\s;&|])gh\s+pr\s+merge\b")
 
 def dispatch(cmd: str) -> Decision:
     """Validate every gh pr create/merge segment in a command chain."""
+    cwd = extract_cwd(cmd)
     for segment in split_command_chain(cmd):
         seg = " " + segment  # prepend space so ^ regex still anchors at boundary
         if _GH_PR_CREATE_RE.search(seg):
-            d = check_create(segment)
+            d = check_create(segment, cwd=cwd)
             if not d.allow:
                 return d
         elif _GH_PR_MERGE_RE.search(seg):
-            d = check_merge(segment)
+            d = check_merge(segment, cwd=cwd)
             if not d.allow:
                 return d
     return Decision(allow=True)

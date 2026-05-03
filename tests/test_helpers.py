@@ -240,8 +240,8 @@ def _patch_branch_state(*, branch, has_develop=True):
     """Convenience: patch both shell wrappers with a single context manager."""
     return patch.multiple(
         hook,
-        current_branch=lambda: branch,
-        has_develop_branch=lambda: has_develop,
+        current_branch=lambda **kw: branch,
+        has_develop_branch=lambda **kw: has_develop,
     )
 
 
@@ -321,7 +321,7 @@ def test_check_create_draft_missing_base_denied():
 
 def _patch_pr_state(*, refs):
     """Patch pr_refs_for to return a fixed (base, head) tuple, or None."""
-    return patch.object(hook, "pr_refs_for", lambda pr_num: refs)
+    return patch.object(hook, "pr_refs_for", lambda pr_num, **kw: refs)
 
 
 def test_check_merge_wrong_base_denied():
@@ -354,9 +354,9 @@ def test_check_merge_gh_failure_fails_open():
 
 def test_check_merge_no_pr_number_resolves_via_branch(monkeypatch):
     """When PR number is omitted, use pr_for_branch + current_branch."""
-    monkeypatch.setattr(hook, "current_branch", lambda: "feature/foo")
-    monkeypatch.setattr(hook, "pr_for_branch", lambda b: "99")
-    monkeypatch.setattr(hook, "pr_refs_for", lambda n: ("main", "feature/foo"))
+    monkeypatch.setattr(hook, "current_branch", lambda **kw: "feature/foo")
+    monkeypatch.setattr(hook, "pr_for_branch", lambda b, **kw: "99")
+    monkeypatch.setattr(hook, "pr_refs_for", lambda n, **kw: ("main", "feature/foo"))
     d = hook.check_merge("gh pr merge --squash")
     assert d.allow is False
     assert "PR #99" in d.reason
@@ -379,15 +379,15 @@ def test_dispatch_unrelated_command_allows():
 def test_dispatch_quoted_echo_does_not_match(monkeypatch):
     """Word-boundary regex: 'gh pr create' inside a quoted echo is not a match."""
     # Even if branch is feature/*, the command shouldn't be parsed as gh pr create.
-    monkeypatch.setattr(hook, "current_branch", lambda: "feature/foo")
-    monkeypatch.setattr(hook, "has_develop_branch", lambda: True)
+    monkeypatch.setattr(hook, "current_branch", lambda **kw: "feature/foo")
+    monkeypatch.setattr(hook, "has_develop_branch", lambda **kw: True)
     d = hook.dispatch('echo "gh pr create --base main"')
     assert d.allow is True
 
 
 def test_dispatch_chained_validates_first_failing_segment(monkeypatch):
-    monkeypatch.setattr(hook, "current_branch", lambda: "feature/foo")
-    monkeypatch.setattr(hook, "has_develop_branch", lambda: True)
+    monkeypatch.setattr(hook, "current_branch", lambda **kw: "feature/foo")
+    monkeypatch.setattr(hook, "has_develop_branch", lambda **kw: True)
     d = hook.dispatch("gh pr create --base main --title t && echo done")
     assert d.allow is False
 
@@ -400,3 +400,36 @@ def test_dispatch_gh_pr_view_subcommand_passthrough():
 def test_dispatch_gh_pr_edit_subcommand_passthrough():
     d = hook.dispatch("gh pr edit 42 --base develop")
     assert d.allow is True
+
+
+# extract_cwd ---------------------------------------------------------------
+
+def test_extract_cwd_bare_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert hook.extract_cwd(f"cd {tmp_path} && gh pr create") == str(tmp_path)
+
+
+def test_extract_cwd_no_cd_returns_none():
+    assert hook.extract_cwd("gh pr create --base develop") is None
+
+
+def test_extract_cwd_path_does_not_exist_returns_none():
+    assert hook.extract_cwd("cd /nonexistent/path && gh pr create") is None
+
+
+def test_extract_cwd_with_quoted_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert hook.extract_cwd(f'cd "{tmp_path}" && gh pr create') == str(tmp_path)
+
+
+# Cross-repo cwd integration ------------------------------------------------
+
+def test_dispatch_respects_cd_prefix(temp_git_repo, monkeypatch, tmp_path):
+    """If the command does `cd /repo && gh pr create`, the hook should
+    inspect the cd'd repo, not the hook's actual CWD."""
+    other_repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    monkeypatch.chdir(tmp_path)  # hook's "real" CWD has no git repo
+    d = hook.dispatch(f"cd {other_repo} && gh pr create --title t")
+    # check_create on feature/foo with no --base should DENY
+    assert d.allow is False
+    assert "explicit --base develop" in d.reason
