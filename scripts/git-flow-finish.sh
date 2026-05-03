@@ -36,7 +36,7 @@ MERGE_VIA_PR=false
 verify_pr_base() {
   local pr_num="$1" expected_base="$2"
   local actual_base gh_stderr
-  gh_stderr=$(mktemp -t verify_pr_base.XXXXXX 2>/dev/null) || gh_stderr=/dev/null
+  gh_stderr=$(mktemp "${TMPDIR:-/tmp}/verify_pr_base.XXXXXX" 2>/dev/null) || gh_stderr=/dev/null
   if ! actual_base=$(gh pr view "$pr_num" --json baseRefName --jq '.baseRefName' 2>"$gh_stderr"); then
     # gh failure: emit a diagnostic so post-hoc forensics survive, then
     # fail open and trust the hook layer to enforce. Header prints
