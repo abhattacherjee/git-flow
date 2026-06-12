@@ -1,8 +1,9 @@
 # Merge & PR-Base Discipline
 
 How to target pull requests and how to merge them safely under Git Flow. The
-`check-pr-base.py` PreToolUse hook *enforces* the base at PR-create time; this
-doc explains the discipline around it — most importantly, why a wrong-base merge
+`check-pr-base.py` PreToolUse hook *enforces* the base for `feature/`,
+`release/`, and `hotfix/` PRs (in repos that have a `develop` branch); this doc
+explains the discipline around it — most importantly, why a wrong-base merge
 to `main` is a structural incident rather than a cosmetic mistake.
 
 ## The core rule
@@ -13,7 +14,6 @@ only ever advance through the release/hotfix flow.
 | Branch | PR base | After merge |
 |---|---|---|
 | `feature/*` | `develop` | delete branch |
-| `bugfix/*` | `develop` | delete branch |
 | `release/*` | `main` | tag, then back-merge `main` → `develop` |
 | `hotfix/*` | `main` | tag, then back-merge `main` → `develop` |
 
@@ -38,8 +38,11 @@ These are different actions with different risk:
   onto `main` followed by a push) is the gated action. Treat it as deliberate:
   confirm the branch type and the base first, every time.
 
-The base-check hook covers PR creation. The merge itself is a discipline gate —
-optionally hardened with a `Stop`/pre-push hook in your own setup.
+The `check-pr-base.py` hook covers both `gh pr create` and `gh pr merge` — it
+blocks a `gh pr merge` whose base is wrong for the head branch's type. What it
+does *not* intercept is a direct `git push origin main` or a local merge onto
+`main` followed by a push; those remain a discipline gate, optionally hardened
+with a `Stop`/pre-push hook in your own setup.
 
 ## Why this matters — the failure mode
 
@@ -57,7 +60,7 @@ explicit cherry-picks), rather than reverting your way out.
 
 ## Checklist
 
-- [ ] Branch named for its type (`feature/`, `bugfix/`, `release/`, `hotfix/`).
+- [ ] Branch named for its type (`feature/`, `release/`, `hotfix/`).
 - [ ] PR opened with an explicit `--base`.
 - [ ] Base verified immediately before merge.
 - [ ] `main` merges are only `release/*` or `hotfix/*`, and are intentional.
