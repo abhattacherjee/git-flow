@@ -2,7 +2,8 @@
 
 How to target pull requests and how to merge them safely under Git Flow. The
 `check-pr-base.py` PreToolUse hook *enforces* the base for `feature/`,
-`release/`, and `hotfix/` PRs (in repos that have a `develop` branch); this doc
+`release/`, and `hotfix/` PRs (feature-branch enforcement requires a `develop`
+branch; single-trunk repos pass through); this doc
 explains the discipline around it — most importantly, why a wrong-base merge
 to `main` is a structural incident rather than a cosmetic mistake.
 
@@ -12,7 +13,7 @@ to `main` is a structural incident rather than a cosmetic mistake.
 only ever advance through the release/hotfix flow.
 
 | Branch | PR base | After merge |
-|---|---|---|
+| ------ | ------- | ----------- |
 | `feature/*` | `develop` | delete branch |
 | `release/*` | `main` | tag, then back-merge `main` → `develop` |
 | `hotfix/*` | `main` | tag, then back-merge `main` → `develop` |

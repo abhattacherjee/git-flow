@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- `skills/git-flow/references/merge-discipline.md`: reusable reference for PR-base targeting and safe merging — the branch→base matrix, explicit `--base` + verify-before-merge, the create-vs-merge-to-main distinction, and the `main`-poisoning failure mode (why a wrong-base merge can't be naively reverted). Linked from `SKILL.md`. Closes #16.
+- **Merge & PR-base discipline reference (#16)** — `skills/git-flow/references/merge-discipline.md`: the branch→base matrix, explicit `--base` + verify-before-merge, the create-vs-merge-to-main distinction, and the `main`-poisoning failure mode (why a wrong-base merge can't be naively reverted). Linked from `SKILL.md`.
 
 ## [2.2.0] - 2026-05-03
 
