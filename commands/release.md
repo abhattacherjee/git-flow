@@ -29,13 +29,14 @@ Apply these rules in order:
 
 1. **Empty** → emit the "No Version Provided" error (§5) and abort.
 2. **Semantic keyword** — `$ARGUMENTS` is `major`, `minor`, or `patch`, or a natural-language equivalent ("next major version", "next minor", "next patch version", …):
-   - Read the current version from the latest tag: `git describe --tags --abbrev=0` (strip a leading `v`). With no tags, treat the current version as `0.0.0`.
+   - Use the `Latest tag` value already shown in **Current Repository State** above (strip a leading `v`); fall back to `git describe --tags --abbrev=0` only if it shows "No tags found", in which case treat the current version as `0.0.0`.
    - Increment the matching component: major → `(X+1).0.0`, minor → `X.(Y+1).0`, patch → `X.Y.(Z+1)`.
    - Cross-check against the commit history if useful (see the increment logic below), but the keyword the user gave governs.
    - Set `VERSION="v<computed>"` and **echo the resolution for confirmation**, e.g. `Resolved "next minor version" → v2.3.0`.
 3. **Explicit semver token** — `$ARGUMENTS` matches `^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$` (optional leading `v`, MAJOR.MINOR.PATCH, optional prerelease):
    - Normalize to a single leading `v`: `VERSION="v${ARGUMENTS#v}"`.
-   - Confirm it is newer than the latest tag; if it is not, warn before continuing.
+   - Confirm it is newer than the latest tag; if it is **not**, warn and ask the user to confirm before continuing — an older version would regress the project's version metadata.
+   - Note: `scripts/bump-version.sh` accepts only a bare `X.Y.Z` (no prerelease). A prerelease version (e.g. `v2.0.0-beta.1`) is valid here but is bumped only on Node repos via `npm version`; on a non-Node repo the bump-version.sh delegation in step 2 will reject it and abort with its error surfaced.
 4. **Anything else** (incomplete like `1.2`, non-semver text) → emit the "Invalid Version Format" error (§5) and abort **before any mutation**.
 
 **Version Increment Logic** (commit analysis since last tag, for the semantic-keyword cross-check):
@@ -47,28 +48,67 @@ See the `git-flow` skill for the full semver selection guide.
 
 ### 2. Create Release Branch
 
-Use the validated `$VERSION` (always carrying a single leading `v`) — never `$ARGUMENTS`.
+**Precondition:** step 1 must have produced a valid, normalized `$VERSION` (a single leading `v`). If it did not, stop here — run none of the commands below.
+
+Substitute the version you resolved in step 1 for `<vX.Y.Z>` on the first line so the block never runs with `$VERSION` unset, then run it as a **single** shell invocation so the abort paths take effect. **If any bump command exits non-zero, STOP** — the block returns to `develop` and deletes the partial `release/$VERSION` branch; do not run `git add`, `git commit`, or `git push`. Surface the bumper's error and re-run `/release` after fixing the cause.
 
 ```bash
-# Switch to develop and update
-git checkout develop
-git pull origin develop
+VERSION="<vX.Y.Z>"   # the validated version from step 1, e.g. v2.3.0
+
+# Re-assert the value is a normalized vX.Y.Z before any mutation — guards
+# against a transcription slip when copying the version out of step 1.
+if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+  echo "ERROR: \$VERSION ('$VERSION') is not a normalized vX.Y.Z — re-run step 1." >&2
+  exit 1
+fi
+
+# Require a clean working tree (enforces the "Uncommitted Changes" case in §5).
+# This makes the abort cleanup below safe: the forced checkout can then only
+# discard the bump THIS block creates, never pre-existing user work.
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "ERROR: working tree is not clean — commit or stash your changes before running /release." >&2
+  exit 1
+fi
+
+# Switch to develop and update (guard both — a failed switch or a non-ff
+# pull must abort before we branch off the wrong base).
+git checkout develop || { echo "ERROR: could not switch to develop." >&2; exit 1; }
+git pull --ff-only origin develop \
+  || { echo "ERROR: develop pull was not a clean fast-forward — resolve manually, then re-run /release." >&2; exit 1; }
 
 # Create release branch from the VALIDATED version
 git checkout -b "release/$VERSION"
 
-# Bump version metadata. Prefer npm for Node projects; otherwise delegate
-# to scripts/bump-version.sh (plugin.json / pyproject.toml / Cargo.toml /
-# version.txt), mirroring /finish step 4b. Both bumpers take the X.Y.Z form
-# (leading 'v' stripped).
+# On any bump failure, undo this block's work (the partial bump + the new
+# branch) and return to develop, so the "re-run /release" remediation works
+# without manual cleanup. Safe because the clean-tree guard above guarantees
+# the only tracked changes present are the ones this block created.
+abort_release() {
+  echo "$1" >&2
+  git checkout -f develop
+  git branch -D "release/$VERSION" \
+    || echo "WARNING: could not delete release/$VERSION — delete it manually." >&2
+  exit 1
+}
+
+# Bump version metadata. Prefer npm for Node projects; otherwise delegate to
+# scripts/bump-version.sh (plugin.json / pyproject.toml / Cargo.toml /
+# version.txt). This is the same bumper /finish step 4b uses for the
+# post-release develop bump — except /finish passes the `patch` keyword,
+# while here we pass the explicit release version. Both accept a bare X.Y.Z.
+# A non-zero exit from either bumper ABORTS — never commit a partial or
+# skipped bump under a "bump version" message.
 if [[ -f package.json ]]; then
-  npm version "${VERSION#v}" --no-git-tag-version
+  npm version "${VERSION#v}" --no-git-tag-version \
+    || abort_release "ERROR: 'npm version' failed. Ensure npm is installed and package.json is valid, then re-run /release $VERSION."
   git add package.json
+  [[ -f package-lock.json ]] && git add package-lock.json
 elif [[ -x scripts/bump-version.sh ]]; then
-  ./scripts/bump-version.sh "${VERSION#v}"
+  ./scripts/bump-version.sh "${VERSION#v}" \
+    || abort_release "ERROR: scripts/bump-version.sh failed. Fix the error above, then re-run /release $VERSION."
   git add -A
 else
-  echo "No package.json or scripts/bump-version.sh — skipping automated version bump"
+  abort_release "ERROR: no package.json and no scripts/bump-version.sh — cannot bump version metadata. Add scripts/bump-version.sh (see /harden-repo) or bump your version file manually, then re-run /release $VERSION."
 fi
 
 # Stage the changelog (edited per §3) and commit the bump
@@ -78,7 +118,8 @@ git commit -m "chore(release): bump version to ${VERSION#v}
 Co-Authored-By: Claude <noreply@anthropic.com>"
 
 # Push to remote with tracking
-git push -u origin "release/$VERSION"
+git push -u origin "release/$VERSION" \
+  || { echo "ERROR: push failed. The branch and bump commit exist locally — fix the remote/auth issue, then run: git push -u origin release/$VERSION" >&2; exit 1; }
 ```
 
 ### 3. CHANGELOG Generation
