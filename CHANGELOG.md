@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-06-20
+
+### Added
+
+- **Merge & PR-base discipline reference (#16)** — `skills/git-flow/references/merge-discipline.md`: the branch→base matrix, explicit `--base` + verify-before-merge, the create-vs-merge-to-main distinction, and the `main`-poisoning failure mode (why a wrong-base merge can't be naively reverted). Linked from `SKILL.md`.
+
+### Fixed
+
+- check-pr-base hook: allow `release/*` and `hotfix/*` branches to back-merge to `develop` (not just `main`), unblocking the Git Flow release/hotfix back-merge PR (#21)
+- check-pr-base hook: detect the PR create/merge subcommand only as real consecutive command tokens (quote/heredoc-aware), eliminating substring false-positives that wrongly blocked commit messages and `--body` arguments mentioning the workflow (#18)
+
 ## [2.2.0] - 2026-05-03
 
 ### Added

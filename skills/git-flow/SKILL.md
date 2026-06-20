@@ -222,7 +222,8 @@ git-flow/
 │       ├── scripts/
 │       │   └── git-flow-status.sh    # Portable diagnostic (any Git Flow repo)
 │       └── references/
-│           └── override-guide.md     # How to write project-level command overrides
+│           ├── override-guide.md     # How to write project-level command overrides
+│           └── merge-discipline.md  # Merge & PR-base discipline reference
 └── commands/
     ├── feature.md                    # /feature <name>
     ├── release.md                    # /release <version>
@@ -237,6 +238,7 @@ Runtime install (read-only, served from cache):
 ## See Also
 
 - **[references/override-guide.md](references/override-guide.md)** — full override guide with patterns, per-command surface, and checklist
+- **[references/merge-discipline.md](references/merge-discipline.md)** — PR-base targeting, the branch→base merge matrix, create-vs-merge-to-main, and the main-poisoning failure mode
 - `git-branch-cleanup` — audit and delete stale branches after merges
 - `changelog-keeper` — generate CHANGELOG.md from commit history
 - `release-and-git-flow` (project-level) — hook workarounds and release pipeline

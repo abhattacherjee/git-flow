@@ -3,9 +3,9 @@
 Validates `gh pr create` and `gh pr merge` Bash invocations against the
 Git Flow base-branch matrix:
 
-    feature/*  ->  develop
-    hotfix/*   ->  main
-    release/*  ->  main
+    feature/*  ->  develop               (direct merge only)
+    hotfix/*   ->  main OR develop       (release PR + back-merge)
+    release/*  ->  main OR develop       (release PR + back-merge)
 
 Reads PreToolUse JSON from stdin. Emits a deny payload to stdout when the
 command would create or merge a PR with the wrong base; exits 0 otherwise.
@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -31,15 +32,30 @@ from typing import Optional
 # Pure helpers
 # ---------------------------------------------------------------------------
 
-def expected_base_for(branch: str) -> Optional[str]:
-    """Return the required PR base for a Git Flow branch, or None if not Git Flow."""
+def expected_bases_for(branch: str) -> Optional[frozenset[str]]:
+    """Return the set of allowed PR bases for a Git Flow branch, or None if not Git Flow.
+
+    feature/* -> frozenset({"develop"})          (direct merge only)
+    hotfix/*  -> frozenset({"main", "develop"})  (release PR + back-merge)
+    release/* -> frozenset({"main", "develop"})  (release PR + back-merge)
+    else       -> None  (sentinel: not Git Flow — pass through)
+    """
     if branch.startswith("feature/"):
-        return "develop"
+        return frozenset({"develop"})
     if branch.startswith("hotfix/"):
-        return "main"
+        return frozenset({"main", "develop"})
     if branch.startswith("release/"):
-        return "main"
+        return frozenset({"main", "develop"})
     return None
+
+
+def canonical_base(bases: frozenset[str]) -> str:
+    """Return the primary/canonical base from an allowed-bases set.
+
+    Used for remediation hints so release/* and hotfix/* still suggest
+    --base main (the release PR target) rather than develop (the back-merge).
+    """
+    return "main" if "main" in bases else "develop"
 
 
 # Match --base VAL, --base=VAL, -B VAL. Captures VAL with surrounding quotes
@@ -260,39 +276,40 @@ def check_create(cmd: str, cwd: Optional[str] = None) -> Decision:
     if branch is None:
         return Decision(allow=True)  # detached HEAD — pass through
 
-    expected = expected_base_for(branch)
-    if expected is None:
+    bases = expected_bases_for(branch)
+    if bases is None:
         return Decision(allow=True)  # not Git Flow — pass through
 
     # Single-trunk repo without 'develop' is not a Git Flow repo even if the
     # branch happens to start with 'feature/'. Pass-through.
-    if expected == "develop" and not has_develop_branch(cwd=cwd):
+    if bases == frozenset({"develop"}) and not has_develop_branch(cwd=cwd):
         return Decision(allow=True)
 
     actual = parse_base_flag(cmd)
     rest = _strip_create_args_for_remediation(cmd)
     branch_type = _branch_type_label(branch)
+    hint_base = canonical_base(bases)
 
     if actual is None:
         return Decision(
             allow=False,
             reason=diag_missing_base_create(
-                expected=expected, branch_type=branch_type, rest_of_args=rest
+                expected=hint_base, branch_type=branch_type, rest_of_args=rest
             ),
         )
     if actual.startswith("$"):
         # Shell expansion — can't evaluate. Allow + warn.
         print(
             f"⚠️  check-pr-base: --base value is shell expansion ({actual}); "
-            f"skipping enforcement. Verify the resolved base is '{expected}'.",
+            f"skipping enforcement. Verify the resolved base is one of {sorted(bases)}.",
             file=sys.stderr,
         )
         return Decision(allow=True)
-    if actual != expected:
+    if actual not in bases:
         return Decision(
             allow=False,
             reason=diag_wrong_base_create(
-                actual=actual, expected=expected, branch_type=branch_type, rest_of_args=rest
+                actual=actual, expected=hint_base, branch_type=branch_type, rest_of_args=rest
             ),
         )
     return Decision(allow=True)
@@ -315,42 +332,96 @@ def check_merge(cmd: str, cwd: Optional[str] = None) -> Decision:
         return Decision(allow=True)  # gh failure — fail open
     actual_base, head = refs
 
-    expected = expected_base_for(head)
-    if expected is None:
+    bases = expected_bases_for(head)
+    if bases is None:
         return Decision(allow=True)  # PR is not from a Git Flow branch
 
-    if actual_base != expected:
+    if actual_base not in bases:
         return Decision(
             allow=False,
             reason=diag_wrong_base_pr(
                 pr_num=pr_num,
                 actual=actual_base,
-                expected=expected,
+                expected=canonical_base(bases),
                 branch_type=_branch_type_label(head),
             ),
         )
     return Decision(allow=True)
 
 
-# Anchor: 'gh pr create'/'gh pr merge' must be at segment start or preceded by
-# a shell separator/whitespace. This catches the common quoted-string false
-# positive (echo "gh pr create ..."), but is NOT quote-aware — heredocs and
-# unquoted argument contexts (echo gh pr create) can still match. Acceptable
-# trade-off because the hook fails open on any validation error downstream.
+# Fallback-only regexes: used ONLY inside _invokes_gh_pr when shlex raises
+# ValueError (unbalanced quotes).  The primary detection path is the shlex
+# token-triple scan; these regexes are NOT quote-aware and are never consulted
+# when shlex succeeds.
 _GH_PR_CREATE_RE = re.compile(r"(?:^|[\s;&|])gh\s+pr\s+create\b")
 _GH_PR_MERGE_RE = re.compile(r"(?:^|[\s;&|])gh\s+pr\s+merge\b")
+
+
+def _invokes_gh_pr(segment: str, subcommand: str) -> bool:
+    """Return True iff *segment* invokes `gh pr <subcommand>` as a real command.
+
+    *segment* is expected to be a str; the dispatch path guarantees this.
+    A non-str value would fail open via main()'s exception handler.
+
+    Uses shlex with punctuation_chars=True so that shell operators (|, &&, ;,
+    etc.) become their own tokens, while quoted strings remain single tokens
+    (quotes stripped in posix mode).  This means `git commit -m "gh pr create"`
+    tokenizes the message as ONE token, so the triple ["gh","pr","create"] never
+    forms as three separate adjacent tokens, and the false positive is eliminated.
+
+    Detection: return True iff the triple ["gh", "pr", subcommand] appears as
+    three CONSECUTIVE tokens anywhere in the token list.  This correctly handles:
+      - Bare invocations: gh pr create ...
+      - Env-assignment prefixes: VAR=val gh pr create ...
+      - Keyword/utility prefixes: sudo, time, env, nice, command, then, etc.
+      - Operator-glued prefixes: foo|gh pr create (punctuation_chars splits |)
+      - Command substitution: echo $(gh pr create ...) — the $(...) body is
+        collapsed to a single token by shlex, but "gh", "pr", subcommand still
+        appear as three consecutive tokens within it; this is a REAL invocation
+        (the substitution executes the command) and is correctly detected.
+    and correctly REJECTS:
+      - Quoted spans: git commit -m "gh pr create" (quoted string = 1 token)
+      - Quoted body args: --body "... gh pr create ..." (same reason)
+
+    On ValueError (unbalanced quotes specifically), falls back to the pre-fix
+    legacy regex on " " + segment, preserving the original detection power
+    exactly.  Heredoc and command-substitution bodies parse successfully via
+    shlex (they collapse to a single token on the success path), so they do NOT
+    trigger this fallback.  The fallback is ONLY used on shlex parse failure —
+    NOT when shlex succeeds but finds no triple, to avoid re-introducing the #18
+    quoted-mention false positive.
+    """
+    # Bash removes a backslash-newline line continuation (joins the lines) before
+    # parsing; shlex(posix) does NOT, so it would otherwise leave a newline glued
+    # to a token (e.g. "create\n") and miss the [gh, pr, <sub>] triple. Normalize
+    # first so a continued real invocation is still detected.
+    segment = segment.replace("\\\r\n", "").replace("\\\n", "")
+    legacy_re = _GH_PR_CREATE_RE if subcommand == "create" else _GH_PR_MERGE_RE
+    try:
+        lex = shlex.shlex(segment, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        # Unbalanced quotes — shlex cannot parse; fall back to legacy regex.
+        return bool(legacy_re.search(" " + segment))
+
+    triple = ["gh", "pr", subcommand]
+    # Search for the triple as three consecutive tokens anywhere in the list.
+    for k in range(len(tokens) - 2):
+        if tokens[k:k + 3] == triple:
+            return True
+    return False
 
 
 def dispatch(cmd: str) -> Decision:
     """Validate every gh pr create/merge segment in a command chain."""
     cwd = extract_cwd(cmd)
     for segment in split_command_chain(cmd):
-        seg = " " + segment  # prepend space so ^ regex still anchors at boundary
-        if _GH_PR_CREATE_RE.search(seg):
+        if _invokes_gh_pr(segment, "create"):
             d = check_create(segment, cwd=cwd)
             if not d.allow:
                 return d
-        elif _GH_PR_MERGE_RE.search(seg):
+        elif _invokes_gh_pr(segment, "merge"):
             d = check_merge(segment, cwd=cwd)
             if not d.allow:
                 return d
