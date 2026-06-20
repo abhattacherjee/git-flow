@@ -7,7 +7,7 @@
     {
       "name": "git-flow",
       "source": "./",
-      "version": "2.2.2",
+      "version": "2.3.0",
       "description": "Git Flow branching workflow with slash commands and diagnostic tools"
     }
   ]
