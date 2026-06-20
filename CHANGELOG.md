@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `/release` now resolves semantic version keywords (`major`/`minor`/`patch`, and natural-language phrases like "next minor version") to a concrete `vX.Y.Z` and validates the version argument before creating any branch, instead of interpolating the raw argument into the branch name (#14)
+
+### Changed
+
+- `/release` version-bump step now delegates to `scripts/bump-version.sh` for non-Node projects (plugin.json / pyproject.toml / Cargo.toml / version.txt) when there is no `package.json`, mirroring `/finish` step 4b — previously the bump was silently skipped on non-Node repos (#15)
+
 ## [2.2.1] - 2026-06-20
 
 ### Added
