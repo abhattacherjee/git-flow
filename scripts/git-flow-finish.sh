@@ -117,9 +117,14 @@ die() { log_fail "$1"; exit 1; }
 log_repo_context() {
   local toplevel remote
   toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || toplevel="(not a git repo)"
-  remote=$(git config --get remote.origin.url 2>/dev/null) || remote="no remote"
   # Strip any user[:pass]@ userinfo so embedded credentials are not logged.
-  remote=$(printf '%s' "$remote" | sed -E 's#://[^/@]*@#://#')
+  # [^/]* (not [^/@]*) consumes a literal '@' in the password up to the last
+  # '@' before the path, so passwords containing '@' don't leak their tail.
+  if remote=$(git config --get remote.origin.url 2>/dev/null); then
+    remote=$(printf '%s' "$remote" | sed -E 's#://[^/]*@#://#')
+  else
+    remote="no remote"
+  fi
   log_phase "REPO CONTEXT"
   log "Repo:   $(basename "$toplevel")"
   log "Path:   $toplevel"
@@ -134,7 +139,7 @@ prune_stale_refs() {
   if git fetch --prune origin; then
     log_ok "Pruned stale remote-tracking refs"
   else
-    log "git fetch --prune origin failed; stale refs may remain"
+    log_fail "git fetch --prune origin failed; stale refs may remain"
   fi
 }
 

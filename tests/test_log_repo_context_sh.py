@@ -15,10 +15,18 @@ SCRIPT = REPO_ROOT / "scripts" / "git-flow-finish.sh"
 
 
 def _run_log_repo_context(repo_dir: Path, remote_url: str | None = None) -> subprocess.CompletedProcess:
-    """Source the script and call log_repo_context in the given directory."""
+    """Source the script and call log_repo_context in the given directory.
+
+    log_repo_context never calls `gh`, so no gh stub is needed. The remote URL
+    is passed via the TEST_REMOTE_URL env var (referenced quoted in the bash
+    body) rather than f-string-interpolated, so shell metacharacters in the URL
+    (e.g. '@' in a password) cannot break the command.
+    """
+    env = os.environ.copy()
     setup_remote = ""
     if remote_url is not None:
-        setup_remote = f'git remote add origin "{remote_url}"'
+        env["TEST_REMOTE_URL"] = remote_url
+        setup_remote = 'git remote add origin "$TEST_REMOTE_URL"'
 
     body = textwrap.dedent(f"""
         cd "{repo_dir}"
@@ -26,11 +34,6 @@ def _run_log_repo_context(repo_dir: Path, remote_url: str | None = None) -> subp
         source "{SCRIPT}"
         log_repo_context
     """)
-    env = os.environ.copy()
-    # Ensure the gh stub doesn't interfere (functions don't call gh)
-    env["PATH"] = f"{REPO_ROOT}/tests/fixtures/bin:{env['PATH']}"
-    env["MOCK_GH_EXIT"] = "0"
-    env["MOCK_GH_STDOUT"] = ""
     return subprocess.run(
         ["bash", "-c", body], capture_output=True, text=True, env=env, timeout=10
     )
@@ -101,4 +104,22 @@ def test_log_repo_context_redacts_credentials(tmp_path):
     combined = result.stdout + result.stderr
     assert "s3cr3t" not in combined, f"Credential leaked in output:\n{combined}"
     assert "user:" not in combined, f"Userinfo leaked in output:\n{combined}"
+    assert "github.com/o/r.git" in combined, f"Expected redacted host/path in output:\n{combined}"
+
+
+def test_log_repo_context_redacts_at_in_password(tmp_path):
+    """A password containing a literal '@' must be fully stripped (no tail leak).
+
+    With a too-narrow sed ([^/@]*@) the redaction stops at the FIRST '@' and
+    leaks the password tail ('ss-w0rd@'). The correct sed ([^/]*@) consumes to
+    the LAST '@' before the path, removing the whole userinfo.
+    """
+    repo = _make_git_repo(tmp_path)
+    remote_url = "https://bob:p@ss-w0rd@github.com/o/r.git"
+    result = _run_log_repo_context(repo, remote_url=remote_url)
+    assert result.returncode == 0, f"Script failed:\n{result.stderr}"
+    combined = result.stdout + result.stderr
+    assert "p@ss-w0rd" not in combined, f"Full password leaked in output:\n{combined}"
+    assert "ss-w0rd" not in combined, f"Password tail leaked in output:\n{combined}"
+    assert "bob" not in combined, f"Username leaked in output:\n{combined}"
     assert "github.com/o/r.git" in combined, f"Expected redacted host/path in output:\n{combined}"

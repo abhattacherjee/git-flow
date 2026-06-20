@@ -12,7 +12,7 @@ Complete current Git Flow branch: **$ARGUMENTS**
 
 - Current branch: !`git branch --show-current`
 - Repo root: !`git rev-parse --show-toplevel 2>/dev/null || pwd`
-- Remote: !`git config --get remote.origin.url 2>/dev/null | sed -E 's#://[^/@]*@#://#' | grep . || echo "no remote"`
+- Remote: !`git config --get remote.origin.url 2>/dev/null | sed -E 's#://[^/]*@#://#' | grep . || echo "no remote"`
 - Branch type: !`git branch --show-current | grep -oE '^(feature|release|hotfix)' || echo "Not a Git Flow branch"`
 - Git status: !`git status --porcelain`
 - Unpushed commits: !`git log @{u}.. --oneline 2>/dev/null | wc -l | tr -d ' '`
@@ -93,7 +93,7 @@ $(git log develop..feature/$NAME --oneline)
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 git push origin develop
-git fetch --prune origin
+git fetch --prune origin   # drop stale remote-tracking refs for deleted branches
 
 # Use -D (force) because squash merge creates different SHA
 git branch -D feature/$NAME 2>/dev/null || true
@@ -124,7 +124,7 @@ git merge --no-ff release/$VERSION -m "Merge release/$VERSION back into develop
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 git push origin develop
-git fetch --prune origin
+git fetch --prune origin   # drop stale remote-tracking refs for deleted branches
 
 # Cleanup (unless --no-delete)
 git branch -d release/$VERSION
