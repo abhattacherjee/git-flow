@@ -21,27 +21,27 @@ def _load_hook_module():
 hook = _load_hook_module()
 
 
-# expected_base_for ----------------------------------------------------------
+# expected_bases_for ----------------------------------------------------------
 
-def test_expected_base_for_feature():
-    assert hook.expected_base_for("feature/foo") == "develop"
-    assert hook.expected_base_for("feature/sub/path") == "develop"
-
-
-def test_expected_base_for_hotfix():
-    assert hook.expected_base_for("hotfix/v1.0.1") == "main"
+def test_expected_bases_for_feature():
+    assert hook.expected_bases_for("feature/foo") == frozenset({"develop"})
+    assert hook.expected_bases_for("feature/sub/path") == frozenset({"develop"})
 
 
-def test_expected_base_for_release():
-    assert hook.expected_base_for("release/v2.0.0") == "main"
+def test_expected_bases_for_hotfix():
+    assert hook.expected_bases_for("hotfix/v1.0.1") == frozenset({"main", "develop"})
 
 
-def test_expected_base_for_non_git_flow_returns_none():
-    assert hook.expected_base_for("main") is None
-    assert hook.expected_base_for("develop") is None
-    assert hook.expected_base_for("chore/xyz") is None
-    assert hook.expected_base_for("") is None
-    assert hook.expected_base_for("feature") is None  # no slash, not feature/*
+def test_expected_bases_for_release():
+    assert hook.expected_bases_for("release/v2.0.0") == frozenset({"main", "develop"})
+
+
+def test_expected_bases_for_non_git_flow_returns_none():
+    assert hook.expected_bases_for("main") is None
+    assert hook.expected_bases_for("develop") is None
+    assert hook.expected_bases_for("chore/xyz") is None
+    assert hook.expected_bases_for("") is None
+    assert hook.expected_bases_for("feature") is None  # no slash, not feature/*
 
 
 # parse_base_flag -----------------------------------------------------------
@@ -269,16 +269,16 @@ def test_check_create_hotfix_main_allowed():
     assert d.allow is True
 
 
-def test_check_create_hotfix_develop_denied():
+def test_check_create_hotfix_develop_now_allowed():
     with _patch_branch_state(branch="hotfix/v1.0.1"):
         d = hook.check_create("gh pr create --base develop --title t")
-    assert d.allow is False
+    assert d.allow is True
 
 
-def test_check_create_release_develop_denied():
+def test_check_create_release_develop_now_allowed():
     with _patch_branch_state(branch="release/v1.0"):
         d = hook.check_create("gh pr create --base develop --title t")
-    assert d.allow is False
+    assert d.allow is True
 
 
 def test_check_create_hotfix_missing_base_denied():
@@ -358,6 +358,20 @@ def test_check_merge_release_to_main_allowed():
     assert d.allow is True
 
 
+def test_check_merge_release_to_develop_back_merge_allowed():
+    """release/* back-merge into develop is a valid Git Flow step."""
+    with _patch_pr_state(refs=("develop", "release/v1.0")):
+        d = hook.check_merge("gh pr merge 8")
+    assert d.allow is True
+
+
+def test_check_merge_hotfix_to_develop_back_merge_allowed():
+    """hotfix/* back-merge into develop is a valid Git Flow step."""
+    with _patch_pr_state(refs=("develop", "hotfix/v1.0.1")):
+        d = hook.check_merge("gh pr merge 9")
+    assert d.allow is True
+
+
 def test_check_merge_gh_failure_fails_open():
     with _patch_pr_state(refs=None):
         d = hook.check_merge("gh pr merge 42")
@@ -432,6 +446,183 @@ def test_extract_cwd_path_does_not_exist_returns_none():
 def test_extract_cwd_with_quoted_path(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert hook.extract_cwd(f'cd "{tmp_path}" && gh pr create') == str(tmp_path)
+
+
+# _invokes_gh_pr helper (issue #18: quote-aware command boundary detection) -----
+
+def test_invokes_gh_pr_plain_create_true():
+    """Bare 'gh pr create' at segment start is detected."""
+    assert hook._invokes_gh_pr("gh pr create --base develop", "create") is True
+
+
+def test_invokes_gh_pr_plain_merge_true():
+    """Bare 'gh pr merge' at segment start is detected."""
+    assert hook._invokes_gh_pr("gh pr merge 42", "merge") is True
+
+
+def test_invokes_gh_pr_body_with_title_arg_false():
+    """'gh pr create' inside a quoted --body (with --title present) must NOT be detected."""
+    assert hook._invokes_gh_pr(
+        'gh issue create --title x --body "next: gh pr create --base main"', "create"
+    ) is False
+
+
+def test_invokes_gh_pr_env_var_prefix_true():
+    """VAR=val prefix before 'gh pr create' is an env assignment, not a command."""
+    assert hook._invokes_gh_pr("VAR=1 gh pr create", "create") is True
+
+
+def test_invokes_gh_pr_pipe_prefix_true():
+    """'gh pr create' after a pipe '|' token is at a command boundary."""
+    assert hook._invokes_gh_pr("foo | gh pr create", "create") is True
+
+
+def test_invokes_gh_pr_view_subcommand_false():
+    """'gh pr view' does not match 'create' subcommand."""
+    assert hook._invokes_gh_pr("gh pr view 42", "create") is False
+
+
+def test_invokes_gh_pr_edit_subcommand_false():
+    """'gh pr edit' does not match 'merge' subcommand."""
+    assert hook._invokes_gh_pr("gh pr edit 42 --base develop", "merge") is False
+
+
+def test_invokes_gh_pr_unbalanced_quotes_falls_back():
+    """A shlex ValueError (unbalanced quotes) falls back to the legacy regex.
+
+    When shlex cannot parse the segment (unbalanced quote), the helper falls
+    back to the legacy whitespace-anchored regex.  If 'gh pr merge' appears at
+    the start (where it IS preceded by a space in ' ' + segment), the legacy
+    regex fires and the function returns True.
+    """
+    # 'gh pr merge 42 --body "unclosed' — shlex fails on the unclosed double
+    # quote, but the legacy regex matches 'gh pr merge' at the segment start.
+    assert hook._invokes_gh_pr('gh pr merge 42 --body "unclosed', "merge") is True
+
+
+# dispatch: issue #18 false-positive guards ------------------------------------
+
+def test_dispatch_commit_message_mention_allowed(monkeypatch):
+    """A commit -m flag whose value mentions the PR subcommand must not trigger."""
+    monkeypatch.setattr(hook, "current_branch", lambda **kw: "feature/foo")
+    monkeypatch.setattr(hook, "has_develop_branch", lambda **kw: True)
+    d = hook.dispatch('git commit -m "wip: do not run gh pr create --base main yet"')
+    assert d.allow is True
+
+
+def test_dispatch_body_arg_mention_allowed(monkeypatch):
+    """A --body argument that mentions the PR subcommand must not trigger."""
+    monkeypatch.setattr(hook, "current_branch", lambda **kw: "feature/foo")
+    monkeypatch.setattr(hook, "has_develop_branch", lambda **kw: True)
+    d = hook.dispatch(
+        'gh issue create --title x --body "next: gh pr create --base main"'
+    )
+    assert d.allow is True
+
+
+def test_dispatch_pipe_with_real_create_denied(monkeypatch):
+    """'gh pr create' after a pipe is at a command boundary and must be denied."""
+    monkeypatch.setattr(hook, "current_branch", lambda **kw: "feature/foo")
+    monkeypatch.setattr(hook, "has_develop_branch", lambda **kw: True)
+    d = hook.dispatch("echo args | gh pr create --base main --title t")
+    assert d.allow is False
+
+
+# _invokes_gh_pr: issue #18 false-NEGATIVE regressions (prefix forms) ---------
+# These must ALL return True — the old boundary model missed them.
+
+def test_invokes_gh_pr_sudo_prefix_true():
+    """'sudo gh pr create' — sudo is a prefix, not a control op. Must match."""
+    assert hook._invokes_gh_pr("sudo gh pr create", "create") is True
+
+
+def test_invokes_gh_pr_time_prefix_true():
+    """'time gh pr create' — time is a timing prefix. Must match."""
+    assert hook._invokes_gh_pr("time gh pr create", "create") is True
+
+
+def test_invokes_gh_pr_env_token_prefix_true():
+    """'env GH_TOKEN=x gh pr create' — env-var token before command. Must match."""
+    assert hook._invokes_gh_pr("env GH_TOKEN=x gh pr create", "create") is True
+
+
+def test_invokes_gh_pr_pipe_glued_true():
+    """'foo|gh pr create' — no spaces around pipe. Must match (punctuation_chars splits |)."""
+    assert hook._invokes_gh_pr("foo|gh pr create", "create") is True
+
+
+# These must STILL return False (regression guard for #18 true-negative fixes).
+
+def test_invokes_gh_pr_quoted_commit_message_false():
+    """'git commit -m "gh pr create"' — quoted string must NOT match."""
+    assert hook._invokes_gh_pr('git commit -m "gh pr create"', "create") is False
+
+
+def test_invokes_gh_pr_quoted_body_arg_false():
+    """'gh issue create --body "see: gh pr create"' — quoted body must NOT match."""
+    assert hook._invokes_gh_pr('gh issue create --body "see: gh pr create"', "create") is False
+
+
+# deny/allow coverage (characterize already-correct behavior) ---------------
+
+def test_check_create_release_wrong_base_denied():
+    with _patch_branch_state(branch="release/v1.0"):
+        d = hook.check_create("gh pr create --base staging --title t")
+    assert d.allow is False
+    assert "main" in d.reason  # canonical_base hint points to main
+
+
+def test_check_create_hotfix_wrong_base_denied():
+    with _patch_branch_state(branch="hotfix/v1.0.1"):
+        d = hook.check_create("gh pr create --base staging --title t")
+    assert d.allow is False
+    assert "main" in d.reason  # canonical_base hint points to main
+
+
+def test_check_merge_release_wrong_base_denied():
+    with _patch_pr_state(refs=("staging", "release/v1.0")):
+        d = hook.check_merge("gh pr merge 7")
+    assert d.allow is False
+    assert "main" in d.reason  # canonical_base hint points to main
+
+
+def test_check_merge_hotfix_to_main_allowed():
+    with _patch_pr_state(refs=("main", "hotfix/v1.0.1")):
+        d = hook.check_merge("gh pr merge 9")
+    assert d.allow is True
+
+
+def test_invokes_gh_pr_command_substitution_detected():
+    # Command substitution $(...) genuinely executes the command, so a
+    # gh-PR-create inside it is a REAL invocation and is correctly detected
+    # (this is intended behavior, NOT a false positive — and it improves on
+    # the legacy regex which missed it).
+    assert hook._invokes_gh_pr("echo $(gh pr create --base main)", "create") is True
+
+
+# _invokes_gh_pr: BH-001 backslash-newline line-continuation regression --------
+# These MUST return True — a backslash+newline is a bash line continuation
+# that joins the lines; shlex(posix) does NOT strip it, so without the
+# normalize step the triple [gh, pr, <sub>] never forms. Regression vs old regex.
+
+def test_invokes_gh_pr_bslash_nl_after_create_true():
+    """'gh pr create\\<nl> --base main' — bash joins the lines; must detect create."""
+    assert hook._invokes_gh_pr("gh pr create\\\n --base main", "create") is True
+
+
+def test_invokes_gh_pr_bslash_nl_after_pr_true():
+    """'gh pr\\<nl> create --base main' — backslash-newline after pr token."""
+    assert hook._invokes_gh_pr("gh pr\\\n create --base main", "create") is True
+
+
+def test_invokes_gh_pr_bslash_nl_after_gh_true():
+    """'gh\\<nl> pr create --base main' — backslash-newline after gh token."""
+    assert hook._invokes_gh_pr("gh\\\n pr create --base main", "create") is True
+
+
+def test_invokes_gh_pr_bslash_nl_merge_true():
+    """'gh pr merge\\<nl> 42' — backslash-newline continuation for merge."""
+    assert hook._invokes_gh_pr("gh pr merge\\\n 42", "merge") is True
 
 
 # Cross-repo cwd integration ------------------------------------------------

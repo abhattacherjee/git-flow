@@ -90,20 +90,20 @@ def test_create_hotfix_correct_base_allowed(temp_git_repo, gh_stub, run_hook):
     assert out == ""
 
 
-# 9
-def test_create_hotfix_wrong_base_blocked(temp_git_repo, gh_stub, run_hook):
+# 9 — develop base is the back-merge target: must be allowed
+def test_create_hotfix_develop_now_allowed(temp_git_repo, gh_stub, run_hook):
     repo = temp_git_repo(branches=["main", "develop", "hotfix/v1.0.1"], head="hotfix/v1.0.1")
     code, out, err = run_hook(_payload("gh pr create --base develop --title t"), repo)
     assert code == 0
-    _assert_deny(out, "BLOCKED", "main")
+    assert out == ""
 
 
-# 10
-def test_create_release_wrong_base_blocked(temp_git_repo, gh_stub, run_hook):
+# 10 — develop base is the back-merge target: must be allowed
+def test_create_release_develop_now_allowed(temp_git_repo, gh_stub, run_hook):
     repo = temp_git_repo(branches=["main", "develop", "release/v1.0"], head="release/v1.0")
     code, out, err = run_hook(_payload("gh pr create --base develop --title t"), repo)
     assert code == 0
-    _assert_deny(out, "BLOCKED", "main")
+    assert out == ""
 
 
 # 11
@@ -193,3 +193,127 @@ def test_create_release_missing_base_blocked(temp_git_repo, gh_stub, run_hook):
     code, out, err = run_hook(_payload("gh pr create --title test"), repo)
     assert code == 0
     _assert_deny(out, "BLOCKED", "release/*", "explicit --base main")
+
+
+# 20 — Issue #18: commit message mention must NOT be blocked
+def test_commit_message_mention_allowed(temp_git_repo, gh_stub, run_hook):
+    """git commit -m whose value mentions the PR subcommand must not be blocked.
+
+    This runs on a feature/foo head so a false match WOULD deny — confirming the
+    allow is due to quote-awareness, not a fall-through on a non-Git-Flow branch.
+    """
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload('git commit -m "wip: do not run gh pr create --base main yet"'), repo
+    )
+    assert code == 0
+    assert out == ""
+
+
+# 21 — Issue #18: --body arg mention must NOT be blocked
+def test_body_arg_mention_allowed(temp_git_repo, gh_stub, run_hook):
+    """gh issue create --body whose value mentions the PR subcommand must not be blocked."""
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload('gh issue create --title x --body "next: gh pr create --base main"'),
+        repo,
+    )
+    assert code == 0
+    assert out == ""
+
+
+# 22 — Issue #18: pipe-preceded 'gh pr create' must still be DENIED (true positive)
+def test_pipe_real_create_denied(temp_git_repo, gh_stub, run_hook):
+    """'gh pr create' following a pipe is a real invocation and must be denied."""
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload("echo args | gh pr create --base main --title t"), repo
+    )
+    assert code == 0
+    _assert_deny(out, "BLOCKED")
+
+
+# 23-26 — Issue #18 false-NEGATIVE regressions: prefix forms that old boundary
+# model missed. All must be DENIED on a feature/* head with --base main.
+
+# 23
+def test_sudo_prefix_denied(temp_git_repo, gh_stub, run_hook):
+    """'sudo gh pr create --base main' must be denied on feature/* head."""
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload("sudo gh pr create --base main --title t"), repo
+    )
+    assert code == 0
+    _assert_deny(out, "BLOCKED")
+
+
+# 24
+def test_time_prefix_denied(temp_git_repo, gh_stub, run_hook):
+    """'time gh pr create --base main' must be denied on feature/* head."""
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload("time gh pr create --base main --title t"), repo
+    )
+    assert code == 0
+    _assert_deny(out, "BLOCKED")
+
+
+# 25
+def test_env_prefix_denied(temp_git_repo, gh_stub, run_hook):
+    """'env GH_TOKEN=x gh pr create --base main' must be denied on feature/* head."""
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload("env GH_TOKEN=x gh pr create --base main --title t"), repo
+    )
+    assert code == 0
+    _assert_deny(out, "BLOCKED")
+
+
+# 26
+def test_if_then_prefix_denied(temp_git_repo, gh_stub, run_hook):
+    """'if true; then gh pr create --base main; fi' must be denied on feature/* head.
+
+    The outer split_command_chain splits on ';', so 'then gh pr create --base main'
+    becomes one segment. The _invokes_gh_pr helper must find the triple ['gh','pr',
+    'create'] as consecutive tokens even though 'then' precedes it.
+    """
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload("if true; then gh pr create --base main --title t; fi"), repo
+    )
+    assert code == 0
+    _assert_deny(out, "BLOCKED")
+
+
+# 27 — Issue #18: heredoc / command-substitution body mentioning the subcommand must NOT be blocked
+def test_heredoc_body_mention_allowed(temp_git_repo, gh_stub, run_hook):
+    """gh issue create with a heredoc-style body that mentions 'gh pr create --base main'
+    must be allowed on a feature/* head.
+
+    The create subcommand appears only inside the $(...) body string, not as a
+    real command token — the hook must not block it.
+    """
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    cmd = (
+        "gh issue create --title 'track PR' "
+        "--body \"$(cat <<'EOF'\nNext step: gh pr create --base main --title done\nEOF\n)\""
+    )
+    code, out, err = run_hook(_payload(cmd), repo)
+    assert code == 0
+    assert out == ""
+
+
+# 28 — BH-001: backslash-newline line continuation must still be detected
+def test_create_bslash_newline_continuation_blocked(temp_git_repo, gh_stub, run_hook):
+    """'gh pr create\\<newline> --base main' must DENY on feature/* head.
+
+    A real backslash+newline is a bash line continuation; the shell joins the
+    lines before parsing.  The old legacy regex caught this; the shlex path
+    did NOT (BH-001 regression).  After the fix both paths must agree.
+    """
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    # Build the command with a literal backslash followed by a newline character.
+    cmd = "gh pr create\\\n --base main --title t"
+    code, out, err = run_hook(_payload(cmd), repo)
+    assert code == 0
+    _assert_deny(out, "BLOCKED")
