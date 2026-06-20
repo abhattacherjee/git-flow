@@ -356,17 +356,6 @@ def check_merge(cmd: str, cwd: Optional[str] = None) -> Decision:
 _GH_PR_CREATE_RE = re.compile(r"(?:^|[\s;&|])gh\s+pr\s+create\b")
 _GH_PR_MERGE_RE = re.compile(r"(?:^|[\s;&|])gh\s+pr\s+merge\b")
 
-# Shell control-operator tokens emitted by shlex with punctuation_chars=True.
-# A position immediately preceded by one of these is a command boundary.
-_SHELL_CONTROL_OPS = frozenset({
-    "|", "||", "&", "&&", ";", ";;", "(", ")", "{", "}",
-    "<", ">", "<<", ">>",
-})
-
-# Pattern matching a shell environment-variable assignment: TOKEN=something.
-# These appear before the command name and should be skipped.
-_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-
 
 def _invokes_gh_pr(segment: str, subcommand: str) -> bool:
     """Return True iff *segment* invokes `gh pr <subcommand>` as a real command.
@@ -375,16 +364,23 @@ def _invokes_gh_pr(segment: str, subcommand: str) -> bool:
     etc.) become their own tokens, while quoted strings remain single tokens
     (quotes stripped in posix mode).  This means `git commit -m "gh pr create"`
     tokenizes the message as ONE token, so the triple ["gh","pr","create"] never
-    forms, and the false positive is eliminated.
+    forms as three separate adjacent tokens, and the false positive is eliminated.
 
-    A "command boundary" is:
-      - The token triple starts at index 0 (skipping any leading VAR=val
-        environment-assignment tokens), OR
-      - The token immediately before "gh" is a shell control-operator.
+    Detection: return True iff the triple ["gh", "pr", subcommand] appears as
+    three CONSECUTIVE tokens anywhere in the token list.  This correctly handles:
+      - Bare invocations: gh pr create ...
+      - Env-assignment prefixes: VAR=val gh pr create ...
+      - Keyword/utility prefixes: sudo, time, env, nice, command, then, etc.
+      - Operator-glued prefixes: foo|gh pr create (punctuation_chars splits |)
+    and correctly REJECTS:
+      - Quoted spans: git commit -m "gh pr create" (quoted string = 1 token)
+      - Quoted body args: --body "... gh pr create ..." (same reason)
 
     On ValueError (unbalanced quotes / heredoc that shlex cannot parse), falls
     back to the pre-fix legacy regex on " " + segment, preserving the original
-    detection power exactly (this change can only REMOVE false positives).
+    detection power exactly.  This fallback is ONLY used on shlex parse failure —
+    NOT when shlex succeeds but finds no triple, to avoid re-introducing the #18
+    quoted-mention false positive.
     """
     _LEGACY_RE = _GH_PR_CREATE_RE if subcommand == "create" else _GH_PR_MERGE_RE
     try:
@@ -396,27 +392,9 @@ def _invokes_gh_pr(segment: str, subcommand: str) -> bool:
         return bool(_LEGACY_RE.search(" " + segment))
 
     triple = ["gh", "pr", subcommand]
-    n = len(tokens)
-    for i, tok in enumerate(tokens):
-        if tok != "gh":
-            continue
-        # Check that the triple matches starting at i.
-        if tokens[i:i + 3] != triple:
-            continue
-        # Determine if this is a command boundary.
-        if i == 0:
-            # At the very start — check if any leading tokens are VAR=val
-            # assignments (they shouldn't be here since i==0, but guard anyway).
-            return True
-        # Skip over leading VAR=val tokens to find the effective command start.
-        j = 0
-        while j < n and _ENV_ASSIGN_RE.match(tokens[j]):
-            j += 1
-        if j == i:
-            # "gh" is the first non-assignment token — command start.
-            return True
-        # Check if the token immediately before "gh" is a control operator.
-        if tokens[i - 1] in _SHELL_CONTROL_OPS:
+    # Search for the triple as three consecutive tokens anywhere in the list.
+    for k in range(len(tokens) - 2):
+        if tokens[k:k + 3] == triple:
             return True
     return False
 

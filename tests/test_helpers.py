@@ -526,6 +526,41 @@ def test_dispatch_pipe_with_real_create_denied(monkeypatch):
     assert d.allow is False
 
 
+# _invokes_gh_pr: issue #18 false-NEGATIVE regressions (prefix forms) ---------
+# These must ALL return True — the old boundary model missed them.
+
+def test_invokes_gh_pr_sudo_prefix_true():
+    """'sudo gh pr create' — sudo is a prefix, not a control op. Must match."""
+    assert hook._invokes_gh_pr("sudo gh pr create", "create") is True
+
+
+def test_invokes_gh_pr_time_prefix_true():
+    """'time gh pr create' — time is a timing prefix. Must match."""
+    assert hook._invokes_gh_pr("time gh pr create", "create") is True
+
+
+def test_invokes_gh_pr_env_token_prefix_true():
+    """'env GH_TOKEN=x gh pr create' — env-var token before command. Must match."""
+    assert hook._invokes_gh_pr("env GH_TOKEN=x gh pr create", "create") is True
+
+
+def test_invokes_gh_pr_pipe_glued_true():
+    """'foo|gh pr create' — no spaces around pipe. Must match (punctuation_chars splits |)."""
+    assert hook._invokes_gh_pr("foo|gh pr create", "create") is True
+
+
+# These must STILL return False (regression guard for #18 true-negative fixes).
+
+def test_invokes_gh_pr_quoted_commit_message_false():
+    """'git commit -m "gh pr create"' — quoted string must NOT match."""
+    assert hook._invokes_gh_pr('git commit -m "gh pr create"', "create") is False
+
+
+def test_invokes_gh_pr_quoted_body_arg_false():
+    """'gh issue create --body "see: gh pr create"' — quoted body must NOT match."""
+    assert hook._invokes_gh_pr('gh issue create --body "see: gh pr create"', "create") is False
+
+
 # Cross-repo cwd integration ------------------------------------------------
 
 def test_dispatch_respects_cd_prefix(temp_git_repo, monkeypatch, tmp_path):

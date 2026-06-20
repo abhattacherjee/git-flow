@@ -231,3 +231,55 @@ def test_pipe_real_create_denied(temp_git_repo, gh_stub, run_hook):
     )
     assert code == 0
     _assert_deny(out, "BLOCKED")
+
+
+# 23-26 — Issue #18 false-NEGATIVE regressions: prefix forms that old boundary
+# model missed. All must be DENIED on a feature/* head with --base main.
+
+# 23
+def test_sudo_prefix_denied(temp_git_repo, gh_stub, run_hook):
+    """'sudo gh pr create --base main' must be denied on feature/* head."""
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload("sudo gh pr create --base main --title t"), repo
+    )
+    assert code == 0
+    _assert_deny(out, "BLOCKED")
+
+
+# 24
+def test_time_prefix_denied(temp_git_repo, gh_stub, run_hook):
+    """'time gh pr create --base main' must be denied on feature/* head."""
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload("time gh pr create --base main --title t"), repo
+    )
+    assert code == 0
+    _assert_deny(out, "BLOCKED")
+
+
+# 25
+def test_env_prefix_denied(temp_git_repo, gh_stub, run_hook):
+    """'env GH_TOKEN=x gh pr create --base main' must be denied on feature/* head."""
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload("env GH_TOKEN=x gh pr create --base main --title t"), repo
+    )
+    assert code == 0
+    _assert_deny(out, "BLOCKED")
+
+
+# 26
+def test_if_then_prefix_denied(temp_git_repo, gh_stub, run_hook):
+    """'if true; then gh pr create --base main; fi' must be denied on feature/* head.
+
+    The outer split_command_chain splits on ';', so 'then gh pr create --base main'
+    becomes one segment. The _invokes_gh_pr helper must find the triple ['gh','pr',
+    'create'] as consecutive tokens even though 'then' precedes it.
+    """
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload("if true; then gh pr create --base main --title t; fi"), repo
+    )
+    assert code == 0
+    _assert_deny(out, "BLOCKED")
