@@ -441,6 +441,91 @@ def test_extract_cwd_with_quoted_path(tmp_path, monkeypatch):
     assert hook.extract_cwd(f'cd "{tmp_path}" && gh pr create') == str(tmp_path)
 
 
+# _invokes_gh_pr helper (issue #18: quote-aware command boundary detection) -----
+
+def test_invokes_gh_pr_plain_create_true():
+    """Bare 'gh pr create' at segment start is detected."""
+    assert hook._invokes_gh_pr("gh pr create --base develop", "create") is True
+
+
+def test_invokes_gh_pr_plain_merge_true():
+    """Bare 'gh pr merge' at segment start is detected."""
+    assert hook._invokes_gh_pr("gh pr merge 42", "merge") is True
+
+
+def test_invokes_gh_pr_commit_message_mention_false():
+    """'gh pr create' appearing inside a quoted -m value must NOT be detected."""
+    assert hook._invokes_gh_pr('git commit -m "gh pr create"', "create") is False
+
+
+def test_invokes_gh_pr_body_arg_mention_false():
+    """'gh pr create' appearing inside a quoted --body must NOT be detected."""
+    assert hook._invokes_gh_pr(
+        'gh issue create --title x --body "next: gh pr create --base main"', "create"
+    ) is False
+
+
+def test_invokes_gh_pr_env_var_prefix_true():
+    """VAR=val prefix before 'gh pr create' is an env assignment, not a command."""
+    assert hook._invokes_gh_pr("VAR=1 gh pr create", "create") is True
+
+
+def test_invokes_gh_pr_pipe_prefix_true():
+    """'gh pr create' after a pipe '|' token is at a command boundary."""
+    assert hook._invokes_gh_pr("foo | gh pr create", "create") is True
+
+
+def test_invokes_gh_pr_view_subcommand_false():
+    """'gh pr view' does not match 'create' subcommand."""
+    assert hook._invokes_gh_pr("gh pr view 42", "create") is False
+
+
+def test_invokes_gh_pr_edit_subcommand_false():
+    """'gh pr edit' does not match 'merge' subcommand."""
+    assert hook._invokes_gh_pr("gh pr edit 42 --base develop", "merge") is False
+
+
+def test_invokes_gh_pr_unbalanced_quotes_falls_back():
+    """A shlex ValueError (unbalanced quotes) falls back to the legacy regex.
+
+    When shlex cannot parse the segment (unbalanced quote), the helper falls
+    back to the legacy whitespace-anchored regex.  If 'gh pr merge' appears at
+    the start (where it IS preceded by a space in ' ' + segment), the legacy
+    regex fires and the function returns True.
+    """
+    # 'gh pr merge 42 --body "unclosed' — shlex fails on the unclosed double
+    # quote, but the legacy regex matches 'gh pr merge' at the segment start.
+    assert hook._invokes_gh_pr('gh pr merge 42 --body "unclosed', "merge") is True
+
+
+# dispatch: issue #18 false-positive guards ------------------------------------
+
+def test_dispatch_commit_message_mention_allowed(monkeypatch):
+    """A commit -m flag whose value mentions the PR subcommand must not trigger."""
+    monkeypatch.setattr(hook, "current_branch", lambda **kw: "feature/foo")
+    monkeypatch.setattr(hook, "has_develop_branch", lambda **kw: True)
+    d = hook.dispatch('git commit -m "wip: do not run gh pr create --base main yet"')
+    assert d.allow is True
+
+
+def test_dispatch_body_arg_mention_allowed(monkeypatch):
+    """A --body argument that mentions the PR subcommand must not trigger."""
+    monkeypatch.setattr(hook, "current_branch", lambda **kw: "feature/foo")
+    monkeypatch.setattr(hook, "has_develop_branch", lambda **kw: True)
+    d = hook.dispatch(
+        'gh issue create --title x --body "next: gh pr create --base main"'
+    )
+    assert d.allow is True
+
+
+def test_dispatch_pipe_with_real_create_denied(monkeypatch):
+    """'gh pr create' after a pipe is at a command boundary and must be denied."""
+    monkeypatch.setattr(hook, "current_branch", lambda **kw: "feature/foo")
+    monkeypatch.setattr(hook, "has_develop_branch", lambda **kw: True)
+    d = hook.dispatch("echo args | gh pr create --base main --title t")
+    assert d.allow is False
+
+
 # Cross-repo cwd integration ------------------------------------------------
 
 def test_dispatch_respects_cd_prefix(temp_git_repo, monkeypatch, tmp_path):

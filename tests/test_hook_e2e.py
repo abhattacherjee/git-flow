@@ -193,3 +193,41 @@ def test_create_release_missing_base_blocked(temp_git_repo, gh_stub, run_hook):
     code, out, err = run_hook(_payload("gh pr create --title test"), repo)
     assert code == 0
     _assert_deny(out, "BLOCKED", "release/*", "explicit --base main")
+
+
+# 20 — Issue #18: commit message mention must NOT be blocked
+def test_commit_message_mention_allowed(temp_git_repo, gh_stub, run_hook):
+    """git commit -m whose value mentions the PR subcommand must not be blocked.
+
+    This runs on a feature/foo head so a false match WOULD deny — confirming the
+    allow is due to quote-awareness, not a fall-through on a non-Git-Flow branch.
+    """
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload('git commit -m "wip: do not run gh pr create --base main yet"'), repo
+    )
+    assert code == 0
+    assert out == ""
+
+
+# 21 — Issue #18: --body arg mention must NOT be blocked
+def test_body_arg_mention_allowed(temp_git_repo, gh_stub, run_hook):
+    """gh issue create --body whose value mentions the PR subcommand must not be blocked."""
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload('gh issue create --title x --body "next: gh pr create --base main"'),
+        repo,
+    )
+    assert code == 0
+    assert out == ""
+
+
+# 22 — Issue #18: pipe-preceded 'gh pr create' must still be DENIED (true positive)
+def test_pipe_real_create_denied(temp_git_repo, gh_stub, run_hook):
+    """'gh pr create' following a pipe is a real invocation and must be denied."""
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    code, out, err = run_hook(
+        _payload("echo args | gh pr create --base main --title t"), repo
+    )
+    assert code == 0
+    _assert_deny(out, "BLOCKED")

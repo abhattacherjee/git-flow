@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -349,24 +350,86 @@ def check_merge(cmd: str, cwd: Optional[str] = None) -> Decision:
 
 
 # Anchor: 'gh pr create'/'gh pr merge' must be at segment start or preceded by
-# a shell separator/whitespace. This catches the common quoted-string false
-# positive (echo "gh pr create ..."), but is NOT quote-aware — heredocs and
-# unquoted argument contexts (echo gh pr create) can still match. Acceptable
-# trade-off because the hook fails open on any validation error downstream.
+# a shell separator/whitespace. These legacy regexes are NOT quote-aware and are
+# only used as a fallback inside _invokes_gh_pr when shlex raises ValueError
+# (unbalanced quotes, heredoc bodies that shlex cannot parse).
 _GH_PR_CREATE_RE = re.compile(r"(?:^|[\s;&|])gh\s+pr\s+create\b")
 _GH_PR_MERGE_RE = re.compile(r"(?:^|[\s;&|])gh\s+pr\s+merge\b")
+
+# Shell control-operator tokens emitted by shlex with punctuation_chars=True.
+# A position immediately preceded by one of these is a command boundary.
+_SHELL_CONTROL_OPS = frozenset({
+    "|", "||", "&", "&&", ";", ";;", "(", ")", "{", "}",
+    "<", ">", "<<", ">>",
+})
+
+# Pattern matching a shell environment-variable assignment: TOKEN=something.
+# These appear before the command name and should be skipped.
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _invokes_gh_pr(segment: str, subcommand: str) -> bool:
+    """Return True iff *segment* invokes `gh pr <subcommand>` as a real command.
+
+    Uses shlex with punctuation_chars=True so that shell operators (|, &&, ;,
+    etc.) become their own tokens, while quoted strings remain single tokens
+    (quotes stripped in posix mode).  This means `git commit -m "gh pr create"`
+    tokenizes the message as ONE token, so the triple ["gh","pr","create"] never
+    forms, and the false positive is eliminated.
+
+    A "command boundary" is:
+      - The token triple starts at index 0 (skipping any leading VAR=val
+        environment-assignment tokens), OR
+      - The token immediately before "gh" is a shell control-operator.
+
+    On ValueError (unbalanced quotes / heredoc that shlex cannot parse), falls
+    back to the pre-fix legacy regex on " " + segment, preserving the original
+    detection power exactly (this change can only REMOVE false positives).
+    """
+    _LEGACY_RE = _GH_PR_CREATE_RE if subcommand == "create" else _GH_PR_MERGE_RE
+    try:
+        lex = shlex.shlex(segment, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        # Unbalanced quotes / heredoc body — fall back to legacy regex.
+        return bool(_LEGACY_RE.search(" " + segment))
+
+    triple = ["gh", "pr", subcommand]
+    n = len(tokens)
+    for i, tok in enumerate(tokens):
+        if tok != "gh":
+            continue
+        # Check that the triple matches starting at i.
+        if tokens[i:i + 3] != triple:
+            continue
+        # Determine if this is a command boundary.
+        if i == 0:
+            # At the very start — check if any leading tokens are VAR=val
+            # assignments (they shouldn't be here since i==0, but guard anyway).
+            return True
+        # Skip over leading VAR=val tokens to find the effective command start.
+        j = 0
+        while j < n and _ENV_ASSIGN_RE.match(tokens[j]):
+            j += 1
+        if j == i:
+            # "gh" is the first non-assignment token — command start.
+            return True
+        # Check if the token immediately before "gh" is a control operator.
+        if tokens[i - 1] in _SHELL_CONTROL_OPS:
+            return True
+    return False
 
 
 def dispatch(cmd: str) -> Decision:
     """Validate every gh pr create/merge segment in a command chain."""
     cwd = extract_cwd(cmd)
     for segment in split_command_chain(cmd):
-        seg = " " + segment  # prepend space so ^ regex still anchors at boundary
-        if _GH_PR_CREATE_RE.search(seg):
+        if _invokes_gh_pr(segment, "create"):
             d = check_create(segment, cwd=cwd)
             if not d.allow:
                 return d
-        elif _GH_PR_MERGE_RE.search(seg):
+        elif _invokes_gh_pr(segment, "merge"):
             d = check_merge(segment, cwd=cwd)
             if not d.allow:
                 return d
