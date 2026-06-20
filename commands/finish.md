@@ -11,8 +11,8 @@ Complete current Git Flow branch: **$ARGUMENTS**
 ## Current Repository State
 
 - Current branch: !`git branch --show-current`
-- Repo root: !`basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"`
-- Remote: !`git config --get remote.origin.url 2>/dev/null || echo "no remote"`
+- Repo root: !`git rev-parse --show-toplevel 2>/dev/null || pwd`
+- Remote: !`git config --get remote.origin.url 2>/dev/null | sed -E 's#://[^/@]*@#://#' | grep . || echo "no remote"`
 - Branch type: !`git branch --show-current | grep -oE '^(feature|release|hotfix)' || echo "Not a Git Flow branch"`
 - Git status: !`git status --porcelain`
 - Unpushed commits: !`git log @{u}.. --oneline 2>/dev/null | wc -l | tr -d ' '`

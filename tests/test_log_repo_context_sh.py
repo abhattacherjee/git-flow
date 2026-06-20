@@ -60,21 +60,45 @@ def _make_git_repo(tmp_path: Path) -> Path:
 
 
 def test_log_repo_context_no_remote(tmp_path):
-    """With no remote configured, output should contain 'no remote' and the repo basename."""
+    """With no remote configured, output should contain 'no remote' and the Repo basename line."""
     repo = _make_git_repo(tmp_path)
     result = _run_log_repo_context(repo)
     assert result.returncode == 0, f"Script failed:\n{result.stderr}"
     combined = result.stdout + result.stderr
     assert "no remote" in combined, f"Expected 'no remote' in output:\n{combined}"
-    assert "myrepo" in combined, f"Expected repo basename 'myrepo' in output:\n{combined}"
+    # Assert the exact Repo line (log() prepends two spaces, script uses 3-space gap).
+    # This fails if basename is replaced by a constant — the Path: line alone is not enough.
+    assert "Repo:   myrepo" in combined, f"Expected exact 'Repo:   myrepo' line in output:\n{combined}"
 
 
 def test_log_repo_context_with_remote(tmp_path):
-    """With a remote configured, output should contain the remote URL."""
+    """With a remote configured, output should contain the remote URL and the Repo basename line."""
     repo = _make_git_repo(tmp_path)
     remote_url = "https://github.com/example/myrepo.git"
     result = _run_log_repo_context(repo, remote_url=remote_url)
     assert result.returncode == 0, f"Script failed:\n{result.stderr}"
     combined = result.stdout + result.stderr
     assert remote_url in combined, f"Expected remote URL in output:\n{combined}"
-    assert "myrepo" in combined, f"Expected repo basename in output:\n{combined}"
+    assert "Repo:   myrepo" in combined, f"Expected exact 'Repo:   myrepo' line in output:\n{combined}"
+
+
+def test_log_repo_context_not_a_git_repo(tmp_path):
+    """In a directory with no git repo, output should show the '(not a git repo)' fallback."""
+    non_repo = tmp_path / "plain"
+    non_repo.mkdir()
+    result = _run_log_repo_context(non_repo)
+    assert result.returncode == 0, f"Script failed:\n{result.stderr}"
+    combined = result.stdout + result.stderr
+    assert "(not a git repo)" in combined, f"Expected '(not a git repo)' fallback in output:\n{combined}"
+
+
+def test_log_repo_context_redacts_credentials(tmp_path):
+    """A credential-bearing remote URL must have its userinfo stripped before logging."""
+    repo = _make_git_repo(tmp_path)
+    remote_url = "https://user:s3cr3t@github.com/o/r.git"
+    result = _run_log_repo_context(repo, remote_url=remote_url)
+    assert result.returncode == 0, f"Script failed:\n{result.stderr}"
+    combined = result.stdout + result.stderr
+    assert "s3cr3t" not in combined, f"Credential leaked in output:\n{combined}"
+    assert "user:" not in combined, f"Userinfo leaked in output:\n{combined}"
+    assert "github.com/o/r.git" in combined, f"Expected redacted host/path in output:\n{combined}"

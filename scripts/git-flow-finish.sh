@@ -118,6 +118,8 @@ log_repo_context() {
   local toplevel remote
   toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || toplevel="(not a git repo)"
   remote=$(git config --get remote.origin.url 2>/dev/null) || remote="no remote"
+  # Strip any user[:pass]@ userinfo so embedded credentials are not logged.
+  remote=$(printf '%s' "$remote" | sed -E 's#://[^/@]*@#://#')
   log_phase "REPO CONTEXT"
   log "Repo:   $(basename "$toplevel")"
   log "Path:   $toplevel"

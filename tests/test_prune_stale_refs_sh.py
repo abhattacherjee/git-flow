@@ -19,17 +19,20 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "git-flow-finish.sh"
 
 
-def _run_prune(tmp_path: Path, dry_run: bool) -> tuple[subprocess.CompletedResult, Path]:
+def _run_prune(tmp_path: Path, dry_run: bool, fetch_exit: int = 0) -> tuple[subprocess.CompletedProcess, Path]:
     """
     Run prune_stale_refs in a minimal git repo.
 
     Returns (completed_process, call_log_file).  The call_log_file records
     each `git fetch ...` invocation (one per line) written by the stub.
+
+    `fetch_exit` controls the exit code the stub returns for `git fetch`
+    (via the MOCK_FETCH_EXIT env var), so we can exercise the failure path.
     """
     call_log = tmp_path / "git_fetch_calls.txt"
 
     # Build a git shim that records fetch calls and passes everything else
-    # through to the real git.
+    # through to the real git. The fetch exit code is honored via MOCK_FETCH_EXIT.
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
     git_real = subprocess.check_output(["which", "git"], text=True).strip()
@@ -38,7 +41,7 @@ def _run_prune(tmp_path: Path, dry_run: bool) -> tuple[subprocess.CompletedResul
         #!/usr/bin/env bash
         if [[ "$1" == "fetch" ]]; then
           echo "git $*" >> "{call_log}"
-          exit 0
+          exit "${{MOCK_FETCH_EXIT:-0}}"
         fi
         exec "{git_real}" "$@"
     """))
@@ -62,6 +65,7 @@ def _run_prune(tmp_path: Path, dry_run: bool) -> tuple[subprocess.CompletedResul
     """)
     env = os.environ.copy()
     env["PATH"] = f"{stub_dir}:{env['PATH']}"
+    env["MOCK_FETCH_EXIT"] = str(fetch_exit)
 
     result = subprocess.run(
         ["bash", "-c", body], capture_output=True, text=True, env=env, timeout=10
@@ -97,6 +101,23 @@ def test_prune_stale_refs_skips_git_fetch_when_dry_run(tmp_path):
 
     combined = result.stdout + result.stderr
     assert "DRY-RUN" in combined, f"Expected DRY-RUN skip line in output:\n{combined}"
-    assert "would run git fetch --prune origin" in combined.lower() or "DRY-RUN" in combined, (
-        f"Expected dry-run skip message:\n{combined}"
+    assert "would run git fetch --prune origin" in combined.lower(), (
+        f"Expected exact dry-run skip message:\n{combined}"
+    )
+
+
+def test_prune_stale_refs_warns_but_does_not_abort_when_fetch_fails(tmp_path):
+    """If git fetch fails, prune_stale_refs must warn but NOT abort under set -e."""
+    result, call_log = _run_prune(tmp_path, dry_run=False, fetch_exit=1)
+    # Must not abort: returncode 0 even though fetch returned non-zero.
+    assert result.returncode == 0, (
+        f"prune_stale_refs aborted on fetch failure (returncode {result.returncode}):\n{result.stderr}"
+    )
+
+    assert call_log.exists(), "git fetch should still have been attempted"
+    assert "fetch --prune origin" in call_log.read_text()
+
+    combined = result.stdout + result.stderr
+    assert "failed; stale refs may remain" in combined, (
+        f"Expected warn-not-abort message on fetch failure:\n{combined}"
     )
