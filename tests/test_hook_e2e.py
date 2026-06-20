@@ -283,3 +283,21 @@ def test_if_then_prefix_denied(temp_git_repo, gh_stub, run_hook):
     )
     assert code == 0
     _assert_deny(out, "BLOCKED")
+
+
+# 27 — Issue #18: heredoc / command-substitution body mentioning the subcommand must NOT be blocked
+def test_heredoc_body_mention_allowed(temp_git_repo, gh_stub, run_hook):
+    """gh issue create with a heredoc-style body that mentions 'gh pr create --base main'
+    must be allowed on a feature/* head.
+
+    The create subcommand appears only inside the $(...) body string, not as a
+    real command token — the hook must not block it.
+    """
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    cmd = (
+        "gh issue create --title 'track PR' "
+        "--body \"$(cat <<'EOF'\nNext step: gh pr create --base main --title done\nEOF\n)\""
+    )
+    code, out, err = run_hook(_payload(cmd), repo)
+    assert code == 0
+    assert out == ""

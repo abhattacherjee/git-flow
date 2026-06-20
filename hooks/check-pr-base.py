@@ -3,9 +3,9 @@
 Validates `gh pr create` and `gh pr merge` Bash invocations against the
 Git Flow base-branch matrix:
 
-    feature/*  ->  develop
-    hotfix/*   ->  main
-    release/*  ->  main
+    feature/*  ->  develop               (direct merge only)
+    hotfix/*   ->  main OR develop       (release PR + back-merge)
+    release/*  ->  main OR develop       (release PR + back-merge)
 
 Reads PreToolUse JSON from stdin. Emits a deny payload to stdout when the
 command would create or merge a PR with the wrong base; exits 0 otherwise.

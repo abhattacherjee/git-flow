@@ -365,6 +365,13 @@ def test_check_merge_release_to_develop_back_merge_allowed():
     assert d.allow is True
 
 
+def test_check_merge_hotfix_to_develop_back_merge_allowed():
+    """hotfix/* back-merge into develop is a valid Git Flow step."""
+    with _patch_pr_state(refs=("develop", "hotfix/v1.0.1")):
+        d = hook.check_merge("gh pr merge 9")
+    assert d.allow is True
+
+
 def test_check_merge_gh_failure_fails_open():
     with _patch_pr_state(refs=None):
         d = hook.check_merge("gh pr merge 42")
