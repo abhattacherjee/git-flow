@@ -114,6 +114,35 @@ log_phase() {
 
 die() { log_fail "$1"; exit 1; }
 
+log_repo_context() {
+  local toplevel remote
+  toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || toplevel="(not a git repo)"
+  # Strip any user[:pass]@ userinfo so embedded credentials are not logged.
+  # [^/]* (not [^/@]*) consumes a literal '@' in the password up to the last
+  # '@' before the path, so passwords containing '@' don't leak their tail.
+  if remote=$(git config --get remote.origin.url 2>/dev/null); then
+    remote=$(printf '%s' "$remote" | sed -E 's#://[^/]*@#://#')
+  else
+    remote="no remote"
+  fi
+  log_phase "REPO CONTEXT"
+  log "Repo:   $(basename "$toplevel")"
+  log "Path:   $toplevel"
+  log "Remote: $remote"
+}
+
+prune_stale_refs() {
+  if $DRY_RUN; then
+    log_skip "DRY-RUN: would run git fetch --prune origin"
+    return 0
+  fi
+  if git fetch --prune origin; then
+    log_ok "Pruned stale remote-tracking refs"
+  else
+    log_fail "git fetch --prune origin failed; stale refs may remain"
+  fi
+}
+
 # Push a local branch to a remote ref.
 # The prevent-direct-push.py hook detects Git Flow merge context and allows these pushes.
 # Args: $1 = target ref (e.g., "main" or "develop"), $2 = local branch to push from
@@ -314,6 +343,8 @@ REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null) || die
 
 log_phase "PRE-FLIGHT CHECKS"
 
+log_repo_context
+
 # Must be on the source branch
 CURRENT=$(git branch --show-current)
 if [[ "$CURRENT" != "$SOURCE_BRANCH" ]]; then
@@ -475,6 +506,7 @@ fi
 log_phase "PUSH DEVELOP"
 
 push_ref "develop" "develop"
+prune_stale_refs
 
 # ── Phase 7: Cleanup ──────────────────────────────────────────────
 

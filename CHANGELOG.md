@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-06-20
+
+### Added
+
+- `/finish` now prints the resolved repository root and remote URL before any merge, tag, or push, so a wrong-repo invocation is visible at a glance (#10)
+- `/finish` now runs `git fetch --prune origin` after each develop sync (feature squash-merge and release/hotfix back-merge), clearing stale remote-tracking refs for branches deleted during finish (#12)
+
+### Fixed
+
+- `/release` now resolves semantic version keywords (`major`/`minor`/`patch`, and natural-language phrases like "next minor version") to a concrete `vX.Y.Z` and validates the version argument before creating any branch, instead of interpolating the raw argument into the branch name (#14)
+
+### Changed
+
+- `/release` version-bump step now delegates to an executable `scripts/bump-version.sh` for non-Node projects (plugin.json / pyproject.toml / Cargo.toml / version.txt) when there is no `package.json`, mirroring `/finish` step 4b; if neither `package.json` nor an executable `scripts/bump-version.sh` is present it aborts with guidance — previously the bump was silently skipped on non-Node repos (#15)
+
 ## [2.2.1] - 2026-06-20
 
 ### Added
