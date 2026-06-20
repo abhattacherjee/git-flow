@@ -32,7 +32,7 @@ from typing import Optional
 # Pure helpers
 # ---------------------------------------------------------------------------
 
-def expected_bases_for(branch: str) -> Optional[frozenset]:
+def expected_bases_for(branch: str) -> Optional[frozenset[str]]:
     """Return the set of allowed PR bases for a Git Flow branch, or None if not Git Flow.
 
     feature/* -> frozenset({"develop"})          (direct merge only)
@@ -49,7 +49,7 @@ def expected_bases_for(branch: str) -> Optional[frozenset]:
     return None
 
 
-def canonical_base(bases: frozenset) -> str:
+def canonical_base(bases: frozenset[str]) -> str:
     """Return the primary/canonical base from an allowed-bases set.
 
     Used for remediation hints so release/* and hotfix/* still suggest
@@ -349,16 +349,19 @@ def check_merge(cmd: str, cwd: Optional[str] = None) -> Decision:
     return Decision(allow=True)
 
 
-# Anchor: 'gh pr create'/'gh pr merge' must be at segment start or preceded by
-# a shell separator/whitespace. These legacy regexes are NOT quote-aware and are
-# only used as a fallback inside _invokes_gh_pr when shlex raises ValueError
-# (unbalanced quotes, heredoc bodies that shlex cannot parse).
+# Fallback-only regexes: used ONLY inside _invokes_gh_pr when shlex raises
+# ValueError (unbalanced quotes).  The primary detection path is the shlex
+# token-triple scan; these regexes are NOT quote-aware and are never consulted
+# when shlex succeeds.
 _GH_PR_CREATE_RE = re.compile(r"(?:^|[\s;&|])gh\s+pr\s+create\b")
 _GH_PR_MERGE_RE = re.compile(r"(?:^|[\s;&|])gh\s+pr\s+merge\b")
 
 
 def _invokes_gh_pr(segment: str, subcommand: str) -> bool:
     """Return True iff *segment* invokes `gh pr <subcommand>` as a real command.
+
+    *segment* is expected to be a str; the dispatch path guarantees this.
+    A non-str value would fail open via main()'s exception handler.
 
     Uses shlex with punctuation_chars=True so that shell operators (|, &&, ;,
     etc.) become their own tokens, while quoted strings remain single tokens
@@ -372,13 +375,19 @@ def _invokes_gh_pr(segment: str, subcommand: str) -> bool:
       - Env-assignment prefixes: VAR=val gh pr create ...
       - Keyword/utility prefixes: sudo, time, env, nice, command, then, etc.
       - Operator-glued prefixes: foo|gh pr create (punctuation_chars splits |)
+      - Command substitution: echo $(gh pr create ...) — the $(...) body is
+        collapsed to a single token by shlex, but "gh", "pr", subcommand still
+        appear as three consecutive tokens within it; this is a REAL invocation
+        (the substitution executes the command) and is correctly detected.
     and correctly REJECTS:
       - Quoted spans: git commit -m "gh pr create" (quoted string = 1 token)
       - Quoted body args: --body "... gh pr create ..." (same reason)
 
-    On ValueError (unbalanced quotes / heredoc that shlex cannot parse), falls
-    back to the pre-fix legacy regex on " " + segment, preserving the original
-    detection power exactly.  This fallback is ONLY used on shlex parse failure —
+    On ValueError (unbalanced quotes specifically), falls back to the pre-fix
+    legacy regex on " " + segment, preserving the original detection power
+    exactly.  Heredoc and command-substitution bodies parse successfully via
+    shlex (they collapse to a single token on the success path), so they do NOT
+    trigger this fallback.  The fallback is ONLY used on shlex parse failure —
     NOT when shlex succeeds but finds no triple, to avoid re-introducing the #18
     quoted-mention false positive.
     """
@@ -388,7 +397,7 @@ def _invokes_gh_pr(segment: str, subcommand: str) -> bool:
         lex.whitespace_split = True
         tokens = list(lex)
     except ValueError:
-        # Unbalanced quotes / heredoc body — fall back to legacy regex.
+        # Unbalanced quotes — shlex cannot parse; fall back to legacy regex.
         return bool(_LEGACY_RE.search(" " + segment))
 
     triple = ["gh", "pr", subcommand]

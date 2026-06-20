@@ -568,6 +568,43 @@ def test_invokes_gh_pr_quoted_body_arg_false():
     assert hook._invokes_gh_pr('gh issue create --body "see: gh pr create"', "create") is False
 
 
+# deny/allow coverage (characterize already-correct behavior) ---------------
+
+def test_check_create_release_wrong_base_denied():
+    with _patch_branch_state(branch="release/v1.0"):
+        d = hook.check_create("gh pr create --base staging --title t")
+    assert d.allow is False
+    assert "main" in d.reason  # canonical_base hint points to main
+
+
+def test_check_create_hotfix_wrong_base_denied():
+    with _patch_branch_state(branch="hotfix/v1.0.1"):
+        d = hook.check_create("gh pr create --base staging --title t")
+    assert d.allow is False
+    assert "main" in d.reason  # canonical_base hint points to main
+
+
+def test_check_merge_release_wrong_base_denied():
+    with _patch_pr_state(refs=("staging", "release/v1.0")):
+        d = hook.check_merge("gh pr merge 7")
+    assert d.allow is False
+    assert "main" in d.reason  # canonical_base hint points to main
+
+
+def test_check_merge_hotfix_to_main_allowed():
+    with _patch_pr_state(refs=("main", "hotfix/v1.0.1")):
+        d = hook.check_merge("gh pr merge 9")
+    assert d.allow is True
+
+
+def test_invokes_gh_pr_command_substitution_detected():
+    # Command substitution $(...) genuinely executes the command, so a
+    # gh-PR-create inside it is a REAL invocation and is correctly detected
+    # (this is intended behavior, NOT a false positive — and it improves on
+    # the legacy regex which missed it).
+    assert hook._invokes_gh_pr("echo $(gh pr create --base main)", "create") is True
+
+
 # Cross-repo cwd integration ------------------------------------------------
 
 def test_dispatch_respects_cd_prefix(temp_git_repo, monkeypatch, tmp_path):
