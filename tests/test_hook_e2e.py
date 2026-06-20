@@ -301,3 +301,19 @@ def test_heredoc_body_mention_allowed(temp_git_repo, gh_stub, run_hook):
     code, out, err = run_hook(_payload(cmd), repo)
     assert code == 0
     assert out == ""
+
+
+# 28 — BH-001: backslash-newline line continuation must still be detected
+def test_create_bslash_newline_continuation_blocked(temp_git_repo, gh_stub, run_hook):
+    """'gh pr create\\<newline> --base main' must DENY on feature/* head.
+
+    A real backslash+newline is a bash line continuation; the shell joins the
+    lines before parsing.  The old legacy regex caught this; the shlex path
+    did NOT (BH-001 regression).  After the fix both paths must agree.
+    """
+    repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")
+    # Build the command with a literal backslash followed by a newline character.
+    cmd = "gh pr create\\\n --base main --title t"
+    code, out, err = run_hook(_payload(cmd), repo)
+    assert code == 0
+    _assert_deny(out, "BLOCKED")

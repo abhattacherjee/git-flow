@@ -391,14 +391,19 @@ def _invokes_gh_pr(segment: str, subcommand: str) -> bool:
     NOT when shlex succeeds but finds no triple, to avoid re-introducing the #18
     quoted-mention false positive.
     """
-    _LEGACY_RE = _GH_PR_CREATE_RE if subcommand == "create" else _GH_PR_MERGE_RE
+    # Bash removes a backslash-newline line continuation (joins the lines) before
+    # parsing; shlex(posix) does NOT, so it would otherwise leave a newline glued
+    # to a token (e.g. "create\n") and miss the [gh, pr, <sub>] triple. Normalize
+    # first so a continued real invocation is still detected.
+    segment = segment.replace("\\\r\n", "").replace("\\\n", "")
+    legacy_re = _GH_PR_CREATE_RE if subcommand == "create" else _GH_PR_MERGE_RE
     try:
         lex = shlex.shlex(segment, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
         tokens = list(lex)
     except ValueError:
         # Unbalanced quotes — shlex cannot parse; fall back to legacy regex.
-        return bool(_LEGACY_RE.search(" " + segment))
+        return bool(legacy_re.search(" " + segment))
 
     triple = ["gh", "pr", subcommand]
     # Search for the triple as three consecutive tokens anywhere in the list.

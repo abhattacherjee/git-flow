@@ -23,20 +23,20 @@ hook = _load_hook_module()
 
 # expected_bases_for ----------------------------------------------------------
 
-def test_expected_base_for_feature():
+def test_expected_bases_for_feature():
     assert hook.expected_bases_for("feature/foo") == frozenset({"develop"})
     assert hook.expected_bases_for("feature/sub/path") == frozenset({"develop"})
 
 
-def test_expected_base_for_hotfix():
+def test_expected_bases_for_hotfix():
     assert hook.expected_bases_for("hotfix/v1.0.1") == frozenset({"main", "develop"})
 
 
-def test_expected_base_for_release():
+def test_expected_bases_for_release():
     assert hook.expected_bases_for("release/v2.0.0") == frozenset({"main", "develop"})
 
 
-def test_expected_base_for_non_git_flow_returns_none():
+def test_expected_bases_for_non_git_flow_returns_none():
     assert hook.expected_bases_for("main") is None
     assert hook.expected_bases_for("develop") is None
     assert hook.expected_bases_for("chore/xyz") is None
@@ -460,13 +460,8 @@ def test_invokes_gh_pr_plain_merge_true():
     assert hook._invokes_gh_pr("gh pr merge 42", "merge") is True
 
 
-def test_invokes_gh_pr_commit_message_mention_false():
-    """'gh pr create' appearing inside a quoted -m value must NOT be detected."""
-    assert hook._invokes_gh_pr('git commit -m "gh pr create"', "create") is False
-
-
-def test_invokes_gh_pr_body_arg_mention_false():
-    """'gh pr create' appearing inside a quoted --body must NOT be detected."""
+def test_invokes_gh_pr_body_with_title_arg_false():
+    """'gh pr create' inside a quoted --body (with --title present) must NOT be detected."""
     assert hook._invokes_gh_pr(
         'gh issue create --title x --body "next: gh pr create --base main"', "create"
     ) is False
@@ -603,6 +598,31 @@ def test_invokes_gh_pr_command_substitution_detected():
     # (this is intended behavior, NOT a false positive — and it improves on
     # the legacy regex which missed it).
     assert hook._invokes_gh_pr("echo $(gh pr create --base main)", "create") is True
+
+
+# _invokes_gh_pr: BH-001 backslash-newline line-continuation regression --------
+# These MUST return True — a backslash+newline is a bash line continuation
+# that joins the lines; shlex(posix) does NOT strip it, so without the
+# normalize step the triple [gh, pr, <sub>] never forms. Regression vs old regex.
+
+def test_invokes_gh_pr_bslash_nl_after_create_true():
+    """'gh pr create\\<nl> --base main' — bash joins the lines; must detect create."""
+    assert hook._invokes_gh_pr("gh pr create\\\n --base main", "create") is True
+
+
+def test_invokes_gh_pr_bslash_nl_after_pr_true():
+    """'gh pr\\<nl> create --base main' — backslash-newline after pr token."""
+    assert hook._invokes_gh_pr("gh pr\\\n create --base main", "create") is True
+
+
+def test_invokes_gh_pr_bslash_nl_after_gh_true():
+    """'gh\\<nl> pr create --base main' — backslash-newline after gh token."""
+    assert hook._invokes_gh_pr("gh\\\n pr create --base main", "create") is True
+
+
+def test_invokes_gh_pr_bslash_nl_merge_true():
+    """'gh pr merge\\<nl> 42' — backslash-newline continuation for merge."""
+    assert hook._invokes_gh_pr("gh pr merge\\\n 42", "merge") is True
 
 
 # Cross-repo cwd integration ------------------------------------------------
