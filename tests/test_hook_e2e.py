@@ -90,20 +90,20 @@ def test_create_hotfix_correct_base_allowed(temp_git_repo, gh_stub, run_hook):
     assert out == ""
 
 
-# 9
-def test_create_hotfix_wrong_base_blocked(temp_git_repo, gh_stub, run_hook):
+# 9 — develop base is the back-merge target: must be allowed
+def test_create_hotfix_develop_now_allowed(temp_git_repo, gh_stub, run_hook):
     repo = temp_git_repo(branches=["main", "develop", "hotfix/v1.0.1"], head="hotfix/v1.0.1")
     code, out, err = run_hook(_payload("gh pr create --base develop --title t"), repo)
     assert code == 0
-    _assert_deny(out, "BLOCKED", "main")
+    assert out == ""
 
 
-# 10
-def test_create_release_wrong_base_blocked(temp_git_repo, gh_stub, run_hook):
+# 10 — develop base is the back-merge target: must be allowed
+def test_create_release_develop_now_allowed(temp_git_repo, gh_stub, run_hook):
     repo = temp_git_repo(branches=["main", "develop", "release/v1.0"], head="release/v1.0")
     code, out, err = run_hook(_payload("gh pr create --base develop --title t"), repo)
     assert code == 0
-    _assert_deny(out, "BLOCKED", "main")
+    assert out == ""
 
 
 # 11

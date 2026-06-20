@@ -21,27 +21,27 @@ def _load_hook_module():
 hook = _load_hook_module()
 
 
-# expected_base_for ----------------------------------------------------------
+# expected_bases_for ----------------------------------------------------------
 
 def test_expected_base_for_feature():
-    assert hook.expected_base_for("feature/foo") == "develop"
-    assert hook.expected_base_for("feature/sub/path") == "develop"
+    assert hook.expected_bases_for("feature/foo") == frozenset({"develop"})
+    assert hook.expected_bases_for("feature/sub/path") == frozenset({"develop"})
 
 
 def test_expected_base_for_hotfix():
-    assert hook.expected_base_for("hotfix/v1.0.1") == "main"
+    assert hook.expected_bases_for("hotfix/v1.0.1") == frozenset({"main", "develop"})
 
 
 def test_expected_base_for_release():
-    assert hook.expected_base_for("release/v2.0.0") == "main"
+    assert hook.expected_bases_for("release/v2.0.0") == frozenset({"main", "develop"})
 
 
 def test_expected_base_for_non_git_flow_returns_none():
-    assert hook.expected_base_for("main") is None
-    assert hook.expected_base_for("develop") is None
-    assert hook.expected_base_for("chore/xyz") is None
-    assert hook.expected_base_for("") is None
-    assert hook.expected_base_for("feature") is None  # no slash, not feature/*
+    assert hook.expected_bases_for("main") is None
+    assert hook.expected_bases_for("develop") is None
+    assert hook.expected_bases_for("chore/xyz") is None
+    assert hook.expected_bases_for("") is None
+    assert hook.expected_bases_for("feature") is None  # no slash, not feature/*
 
 
 # parse_base_flag -----------------------------------------------------------
@@ -269,16 +269,16 @@ def test_check_create_hotfix_main_allowed():
     assert d.allow is True
 
 
-def test_check_create_hotfix_develop_denied():
+def test_check_create_hotfix_develop_now_allowed():
     with _patch_branch_state(branch="hotfix/v1.0.1"):
         d = hook.check_create("gh pr create --base develop --title t")
-    assert d.allow is False
+    assert d.allow is True
 
 
-def test_check_create_release_develop_denied():
+def test_check_create_release_develop_now_allowed():
     with _patch_branch_state(branch="release/v1.0"):
         d = hook.check_create("gh pr create --base develop --title t")
-    assert d.allow is False
+    assert d.allow is True
 
 
 def test_check_create_hotfix_missing_base_denied():
@@ -355,6 +355,13 @@ def test_check_merge_correct_base_allowed():
 def test_check_merge_release_to_main_allowed():
     with _patch_pr_state(refs=("main", "release/v1.0")):
         d = hook.check_merge("gh pr merge 7")
+    assert d.allow is True
+
+
+def test_check_merge_release_to_develop_back_merge_allowed():
+    """release/* back-merge into develop is a valid Git Flow step."""
+    with _patch_pr_state(refs=("develop", "release/v1.0")):
+        d = hook.check_merge("gh pr merge 8")
     assert d.allow is True
 
 

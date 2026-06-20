@@ -31,15 +31,30 @@ from typing import Optional
 # Pure helpers
 # ---------------------------------------------------------------------------
 
-def expected_base_for(branch: str) -> Optional[str]:
-    """Return the required PR base for a Git Flow branch, or None if not Git Flow."""
+def expected_bases_for(branch: str) -> Optional[frozenset]:
+    """Return the set of allowed PR bases for a Git Flow branch, or None if not Git Flow.
+
+    feature/* -> frozenset({"develop"})          (direct merge only)
+    hotfix/*  -> frozenset({"main", "develop"})  (release PR + back-merge)
+    release/* -> frozenset({"main", "develop"})  (release PR + back-merge)
+    else       -> None  (sentinel: not Git Flow — pass through)
+    """
     if branch.startswith("feature/"):
-        return "develop"
+        return frozenset({"develop"})
     if branch.startswith("hotfix/"):
-        return "main"
+        return frozenset({"main", "develop"})
     if branch.startswith("release/"):
-        return "main"
+        return frozenset({"main", "develop"})
     return None
+
+
+def canonical_base(bases: frozenset) -> str:
+    """Return the primary/canonical base from an allowed-bases set.
+
+    Used for remediation hints so release/* and hotfix/* still suggest
+    --base main (the release PR target) rather than develop (the back-merge).
+    """
+    return "main" if "main" in bases else "develop"
 
 
 # Match --base VAL, --base=VAL, -B VAL. Captures VAL with surrounding quotes
@@ -260,39 +275,40 @@ def check_create(cmd: str, cwd: Optional[str] = None) -> Decision:
     if branch is None:
         return Decision(allow=True)  # detached HEAD — pass through
 
-    expected = expected_base_for(branch)
-    if expected is None:
+    bases = expected_bases_for(branch)
+    if bases is None:
         return Decision(allow=True)  # not Git Flow — pass through
 
     # Single-trunk repo without 'develop' is not a Git Flow repo even if the
     # branch happens to start with 'feature/'. Pass-through.
-    if expected == "develop" and not has_develop_branch(cwd=cwd):
+    if bases == frozenset({"develop"}) and not has_develop_branch(cwd=cwd):
         return Decision(allow=True)
 
     actual = parse_base_flag(cmd)
     rest = _strip_create_args_for_remediation(cmd)
     branch_type = _branch_type_label(branch)
+    hint_base = canonical_base(bases)
 
     if actual is None:
         return Decision(
             allow=False,
             reason=diag_missing_base_create(
-                expected=expected, branch_type=branch_type, rest_of_args=rest
+                expected=hint_base, branch_type=branch_type, rest_of_args=rest
             ),
         )
     if actual.startswith("$"):
         # Shell expansion — can't evaluate. Allow + warn.
         print(
             f"⚠️  check-pr-base: --base value is shell expansion ({actual}); "
-            f"skipping enforcement. Verify the resolved base is '{expected}'.",
+            f"skipping enforcement. Verify the resolved base is one of {sorted(bases)}.",
             file=sys.stderr,
         )
         return Decision(allow=True)
-    if actual != expected:
+    if actual not in bases:
         return Decision(
             allow=False,
             reason=diag_wrong_base_create(
-                actual=actual, expected=expected, branch_type=branch_type, rest_of_args=rest
+                actual=actual, expected=hint_base, branch_type=branch_type, rest_of_args=rest
             ),
         )
     return Decision(allow=True)
@@ -315,17 +331,17 @@ def check_merge(cmd: str, cwd: Optional[str] = None) -> Decision:
         return Decision(allow=True)  # gh failure — fail open
     actual_base, head = refs
 
-    expected = expected_base_for(head)
-    if expected is None:
+    bases = expected_bases_for(head)
+    if bases is None:
         return Decision(allow=True)  # PR is not from a Git Flow branch
 
-    if actual_base != expected:
+    if actual_base not in bases:
         return Decision(
             allow=False,
             reason=diag_wrong_base_pr(
                 pr_num=pr_num,
                 actual=actual_base,
-                expected=expected,
+                expected=canonical_base(bases),
                 branch_type=_branch_type_label(head),
             ),
         )
