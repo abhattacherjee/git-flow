@@ -37,6 +37,9 @@ verify_pr_base() {
   local pr_num="$1" expected_base="$2"
   local actual_base gh_stderr
   gh_stderr=$(mktemp "${TMPDIR:-/tmp}/verify_pr_base.XXXXXX" 2>/dev/null) || gh_stderr=/dev/null
+  if [[ "$gh_stderr" != "/dev/null" ]]; then
+    trap 'rm -f "$gh_stderr"; trap - RETURN' RETURN
+  fi
   if ! actual_base=$(gh pr view "$pr_num" --json baseRefName --jq '.baseRefName' 2>"$gh_stderr"); then
     # gh failure: emit a diagnostic so post-hoc forensics survive, then
     # fail open and trust the hook layer to enforce. Header prints
@@ -47,10 +50,8 @@ verify_pr_base() {
     elif [[ "$gh_stderr" == "/dev/null" ]]; then
       echo "    (gh stderr unavailable: mktemp failed)" >&2
     fi
-    [[ "$gh_stderr" != "/dev/null" ]] && rm -f "$gh_stderr"
     return 0
   fi
-  [[ "$gh_stderr" != "/dev/null" ]] && rm -f "$gh_stderr"
   if [[ "$actual_base" != "$expected_base" ]]; then
     cat >&2 <<EOM
 ✗ ABORTING: PR #${pr_num} has base "${actual_base}", expected "${expected_base}".

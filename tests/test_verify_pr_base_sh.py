@@ -14,7 +14,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "git-flow-finish.sh"
 
 
-def _run_verify(pr_num: str, expected_base: str, gh_stdout: str, gh_exit: int = 0):
+def _run_verify(
+    pr_num: str,
+    expected_base: str,
+    gh_stdout: str,
+    gh_exit: int = 0,
+    tmpdir: Path | None = None,
+):
     body = textwrap.dedent(f"""
         source "{SCRIPT}"
         verify_pr_base "{pr_num}" "{expected_base}"
@@ -23,6 +29,8 @@ def _run_verify(pr_num: str, expected_base: str, gh_stdout: str, gh_exit: int = 
     env["PATH"] = f"{REPO_ROOT}/tests/fixtures/bin:{env['PATH']}"
     env["MOCK_GH_STDOUT"] = gh_stdout
     env["MOCK_GH_EXIT"] = str(gh_exit)
+    if tmpdir is not None:
+        env["TMPDIR"] = str(tmpdir)
     env.pop("MOCK_GH_STDERR", None)  # explicit isolation: don't inherit from caller's shell
     return subprocess.run(
         ["bash", "-c", body], capture_output=True, text=True, env=env, timeout=10
@@ -41,6 +49,12 @@ def test_verify_fail_on_mismatch():
     assert "ABORTING" in result.stderr
     assert "PR #42" in result.stderr
     assert "gh pr edit 42 --base develop" in result.stderr
+
+
+def test_verify_fail_on_mismatch_removes_tempfile(tmp_path):
+    result = _run_verify("42", "develop", "main", tmpdir=tmp_path)
+    assert result.returncode == 1
+    assert list(tmp_path.glob("verify_pr_base.*")) == []
 
 
 def test_verify_fail_open_on_gh_error():
