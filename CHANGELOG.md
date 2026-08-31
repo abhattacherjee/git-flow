@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Refreshed the harden-repo hooks and scripts to the released v1.2.0 templates.** The installed copies predated upstream #43, #73, #83 and #84, so this repo was running guards with two live bypasses: a `cd` to a path that does not exist turned all four guards off while the command still ran here, and the secret scan could not see `scripts/`. Also gains the command parser, worktree-stable preflight identity, and the advisory drift check. Two artifacts were missing and are now installed: `scripts/check-assertion-strength.sh` and `.github/workflows/ci.yml` — the CI file is the first thing in `.github/` here, ships with its `__HARDEN_LINT_JOB__` / `__HARDEN_TEST_JOB__` blocks still on the installer placeholder (comments, so the YAML is valid), and adds a secret-scan and a CHANGELOG gate to pull requests. Left alone: `scripts/bump-version.sh` and `scripts/git-flow-finish.sh` are UNRECOGNIZED (locally modified — this repo ships its own Git Flow tooling), and `scripts/commit-preflight.sh` is still the v1.0.0 generation with unfilled lint/test placeholders, which the doctor classifies UNCONFIGURED and therefore does not repair.
+
 ### Security
 
 - **`scripts/bump-version.sh` no longer executes injected commands from the version source (harden-repo#55):** the script fed the parsed version components straight into bash arithmetic with only an is-it-empty check in front. `$(( ))` recursively expands the *contents* of the variables it evaluates, so an array-subscript payload in the version source — e.g. `x[$(rm -rf ~)].0.0` — ran as a command substitution during a bump, and the mangled result was then written back to the version file at exit 0. All three bump types were exploitable, each with the payload in the component that bump evaluates.
