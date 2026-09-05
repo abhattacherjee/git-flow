@@ -9,6 +9,10 @@ All notable changes to this project will be documented in this file.
 - **Refreshed the harden-repo hooks and scripts to the released v1.2.0 templates.** The installed copies predated upstream #43, #73, #83 and #84, so this repo was running guards with two live bypasses: a `cd` to a path that does not exist turned all four guards off while the command still ran here, and the secret scan could not see `scripts/`. Also gains the command parser, worktree-stable preflight identity, and the advisory drift check. One missing artifact is now installed: `scripts/check-assertion-strength.sh`. The doctor also offered `.github/workflows/ci.yml`, which `--fix` installs because it was MISSING; it was deliberately dropped from this PR rather than merged. It would have been the first thing in `.github/` here and would have added secret-scan and CHANGELOG gates to every pull request — a change this repo did not ask for. Left alone: `scripts/bump-version.sh` and `scripts/git-flow-finish.sh` are UNRECOGNIZED (locally modified — this repo ships its own Git Flow tooling), and `scripts/commit-preflight.sh` remains the v1.0.0 generation with unfilled lint/test placeholders, which the doctor classifies UNCONFIGURED and cannot repair — it was left at that generation apart from two necessary edits: its preflight token key (see below), without which the upgraded hook would have denied every commit, and the replacement of `python3 -c "...'$(realpath ...)'..."` with an argv form, removing a hazard where a repo path containing a quote or newline was interpolated straight into a Python string literal.
   The preflight token key was updated to match: the v1.2.0 hook keys it on the repo's git common dir, so `commit-preflight.sh` had to key it the same way or every commit would be denied.
 
+### Fixed
+
+- `verify_pr_base` no longer leaves its stderr tempfile in `$TMPDIR` when `/finish` is interrupted while `gh pr view` is still running. (#8)
+
 ### Security
 
 - **Refreshed the harden-repo hooks to the released v1.2.1 templates.** The installed copies were
