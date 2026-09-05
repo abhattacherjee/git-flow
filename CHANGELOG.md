@@ -11,6 +11,31 @@ All notable changes to this project will be documented in this file.
 
 ### Security
 
+- **Refreshed the harden-repo hooks to the released v1.2.1 templates.** The installed copies were
+  v1.2.0, which the doctor classified as `DRIFTED-BEHIND` with no local edits, so the repair
+  overwrote nothing of this repo's own. All four hooks are now byte-identical to the v1.2.1
+  templates and compile clean.
+
+  v1.2.1 closes nineteen ways to push a protected branch past the guard, every one of them open in
+  the copies this repo was running. The guard judged a push by how it was **spelled** rather than by
+  what it would do, so `git push origin HEAD:refs/heads/main` was allowed while the short `main`
+  spelling was denied. Also closed: `heads/main`, globs and the matching refspec, `--all`,
+  `--branches`, `--mirror` and any unambiguous abbreviation git accepts (`--al`, `--b`, `--mir`),
+  the bare `:` and `+:` refspecs, `--tags HEAD` from a protected branch, a shell substitution or
+  `$VAR` hiding the destination until after the guard had decided, `git -C` and subshell scope
+  escapes, four shapes of the failed-`cd` hole, and the two git-config cases
+  (`push.default = matching`, `remote.<remote>.mirror = true`) that make a plain `git push` push
+  everything.
+
+  Separately, the Git Flow finish block had never been executed by a single test on any generation:
+  every fixture built HEAD with `commit --allow-empty`, so `rev-parse HEAD^2` always failed and the
+  block was skipped. Four mutations inside it survived a fully green suite, one allowing ANY push to
+  `main` or `develop` whenever HEAD is a merge commit.
+
+  Verified in this repo rather than inherited from upstream: 18 rows driven through the installed
+  hook — 14 bypass shapes all denied, and a feature push, `-u`, a tag push and a genuine `cd` to
+  another repo all still allowed. No false denials.
+
 - **`scripts/bump-version.sh` no longer executes injected commands from the version source (harden-repo#55):** the script fed the parsed version components straight into bash arithmetic with only an is-it-empty check in front. `$(( ))` recursively expands the *contents* of the variables it evaluates, so an array-subscript payload in the version source — e.g. `x[$(rm -rf ~)].0.0` — ran as a command substitution during a bump, and the mangled result was then written back to the version file at exit 0. All three bump types were exploitable, each with the payload in the component that bump evaluates.
 
   The fix has two layers, because the first one alone was not enough:
