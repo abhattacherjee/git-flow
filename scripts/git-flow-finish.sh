@@ -33,28 +33,84 @@ MERGE_VIA_PR=false
 # Fails open on gh errors so the hook layer remains the source of truth.
 # Spec: docs/superpowers/specs/2026-05-02-pr-base-enforcement-design.md
 # ---------------------------------------------------------------------------
-# cleanup_gh_stderr — remove verify_pr_base's stderr tempfile and drop the
-# signal trap guarding it. No-op when mktemp failed and the path is /dev/null,
-# in which case no trap was set either.
-cleanup_gh_stderr() {
-  if [[ "$1" != "/dev/null" ]]; then
-    rm -f -- "$1"
-    trap - EXIT TERM HUP
+# Path verify_pr_base captures gh's stderr into, empty when there is none. A
+# global rather than a local so the EXIT trap can be armed before the file is
+# created and still find the path once it exists.
+VERIFY_PR_BASE_TMP=""
+
+# rm_verify_pr_base_tmp — trap body. Removes the tempfile if one was created.
+# Reads the path at fire time, so nothing has to be quoted into a trap string.
+rm_verify_pr_base_tmp() {
+  if [[ -n "${VERIFY_PR_BASE_TMP:-}" ]]; then
+    rm -f -- "$VERIFY_PR_BASE_TMP"
   fi
+}
+
+# cleanup_gh_stderr — remove the tempfile on a normal path and put the EXIT
+# trap back as the caller had it. $1 is the caller's saved `trap -p` spec,
+# "" if there was none.
+#
+# If the file cannot be removed, the trap stays armed so exit gets another
+# attempt, and the reason is printed rather than swallowed. Always returns 0,
+# so a cleanup problem cannot abort /finish under `set -e`.
+cleanup_gh_stderr() {
+  local saved="${1-}"
+  if [[ -n "${VERIFY_PR_BASE_TMP:-}" ]]; then
+    if ! rm -f -- "$VERIFY_PR_BASE_TMP"; then
+      echo "⚠️  verify_pr_base: could not remove ${VERIFY_PR_BASE_TMP}; leaving the exit trap armed." >&2
+      return 0
+    fi
+    VERIFY_PR_BASE_TMP=""
+  fi
+  trap - EXIT
+  if [[ -n "$saved" ]]; then
+    eval "$saved"
+  fi
+  return 0
 }
 
 verify_pr_base() {
   local pr_num="$1" expected_base="$2"
-  local actual_base gh_stderr
-  gh_stderr=$(mktemp "${TMPDIR:-/tmp}/verify_pr_base.XXXXXX" 2>/dev/null) || gh_stderr=/dev/null
-  # The `gh pr view` below blocks for as long as the network takes, and that is
-  # the only window where the tempfile exists with nothing yet to remove it. A
-  # RETURN trap does not fire when the shell is killed there — the function
-  # never returns — so bind the path into an EXIT-family trap, which does, and
-  # drop it again on each normal path. This function owns EXIT/TERM/HUP for the
-  # script; nothing else here sets one.
-  if [[ "$gh_stderr" != "/dev/null" ]]; then
-    trap "rm -f -- $(printf '%q' "$gh_stderr")" EXIT TERM HUP
+  local actual_base gh_stderr saved_traps=""
+  # Arm cleanup BEFORE mktemp. Creating the file first leaves a window where it
+  # exists with nothing guarding it, and a signal landing there still leaks —
+  # which is the very bug this closes.
+  #
+  # EXIT is the whole mechanism and the only trap wanted here. Bash runs an EXIT
+  # trap on the way out, including when it dies from a fatal signal, and the
+  # signal still shows in the exit status. A RETURN trap would not cover this:
+  # under a signal the function never returns.
+  #
+  # Do NOT add TERM or HUP. Trapping them without re-raising makes the shell
+  # survive the signal and resume, and the statement after this call is
+  # `gh pr merge --squash` against main — so a dropped SSH session would merge
+  # to main and exit 0. EXIT alone cleans up and still lets the signal kill.
+  #
+  # cleanup_gh_stderr clears EXIT wholesale, so nothing else in this script may
+  # install an EXIT trap that has to outlive a verify_pr_base call.
+  saved_traps=$(trap -p EXIT)
+  trap 'rm_verify_pr_base_tmp' EXIT
+
+  # Take the NAME first, then create the file. `VAR=$(mktemp ...)` looks atomic
+  # but is not: mktemp's child creates the file and only then does the parent
+  # finish the assignment, so a signal landing in between runs the trap while
+  # VERIFY_PR_BASE_TMP is still empty and the file survives. Measured at roughly
+  # 1 kill in 5, and 25 out of 25 once that gap is widened by 50ms.
+  #
+  # `mktemp -u` hands back an unused name without leaving a file, so the
+  # variable is set before anything exists on disk and the trap can always
+  # remove it. Creating it under `set -C` gives O_EXCL, which refuses to follow
+  # a symlink planted at that name, and `umask 077` keeps gh's stderr — which
+  # can carry token material — readable only by us. If that create loses the
+  # race and fails, we fall back to /dev/null like any other mktemp failure.
+  VERIFY_PR_BASE_TMP=$(mktemp -u "${TMPDIR:-/tmp}/verify_pr_base.XXXXXX" 2>/dev/null) || VERIFY_PR_BASE_TMP=""
+  if [[ -n "$VERIFY_PR_BASE_TMP" ]] && ! ( umask 077; set -C; : > "$VERIFY_PR_BASE_TMP" ); then
+    VERIFY_PR_BASE_TMP=""
+  fi
+  if [[ -n "$VERIFY_PR_BASE_TMP" ]]; then
+    gh_stderr="$VERIFY_PR_BASE_TMP"
+  else
+    gh_stderr=/dev/null
   fi
   if ! actual_base=$(gh pr view "$pr_num" --json baseRefName --jq '.baseRefName' 2>"$gh_stderr"); then
     # gh failure: emit a diagnostic so post-hoc forensics survive, then
@@ -66,10 +122,10 @@ verify_pr_base() {
     elif [[ "$gh_stderr" == "/dev/null" ]]; then
       echo "    (gh stderr unavailable: mktemp failed)" >&2
     fi
-    cleanup_gh_stderr "$gh_stderr"
+    cleanup_gh_stderr "$saved_traps"
     return 0
   fi
-  cleanup_gh_stderr "$gh_stderr"
+  cleanup_gh_stderr "$saved_traps"
   if [[ "$actual_base" != "$expected_base" ]]; then
     cat >&2 <<EOM
 ✗ ABORTING: PR #${pr_num} has base "${actual_base}", expected "${expected_base}".

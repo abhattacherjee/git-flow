@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Test stub for `gh`. Reads MOCK_GH_STDOUT, MOCK_GH_STDERR, MOCK_GH_EXIT
+# Test stub for `gh`. Reads MOCK_GH_STDOUT, MOCK_GH_STDERR, MOCK_GH_EXIT,
+# MOCK_GH_SLEEP
 # from env. Default: prints nothing, exits 0.
 
 # Block before answering so a test can kill the caller mid-call.

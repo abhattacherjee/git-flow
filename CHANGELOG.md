@@ -11,7 +11,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- `verify_pr_base` no longer leaves its stderr tempfile behind when `/finish` is killed while `gh pr view` is still running. Cleanup now runs from an EXIT/TERM/HUP trap; the previously proposed `RETURN` trap does not fire when the shell is signalled, because the function never returns. (#8)
+- `verify_pr_base` no longer leaves its stderr tempfile in `$TMPDIR` when `/finish` is interrupted while `gh pr view` is still running. (#8)
 
 ### Security
 
