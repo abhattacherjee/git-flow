@@ -188,6 +188,12 @@ def test_pr_for_branch_no_pr_returns_none(gh_stub, monkeypatch, tmp_path):
     assert hook.pr_for_branch("feature/foo") is None
 
 
+def test_pr_for_branch_malformed_json_returns_none(gh_stub, monkeypatch, tmp_path):
+    gh_stub("not json")
+    monkeypatch.chdir(tmp_path)
+    assert hook.pr_for_branch("feature/foo") is None
+
+
 # Decision dataclass --------------------------------------------------------
 
 def test_decision_allow_default():
@@ -225,6 +231,34 @@ def test_diagnostic_missing_base_create():
     assert "BLOCKED" in msg
     assert "explicit --base develop" in msg
     assert "gh pr create --base develop --title t" in msg
+
+
+def test_strip_create_args_for_remediation_removes_long_base():
+    assert hook._strip_create_args_for_remediation(
+        "gh pr create --base develop --title t"
+    ) == "--title t"
+
+
+def test_strip_create_args_for_remediation_removes_equals_base():
+    assert hook._strip_create_args_for_remediation(
+        "gh pr create --base=main --title t"
+    ) == "--title t"
+
+
+def test_strip_create_args_for_remediation_removes_short_base():
+    assert hook._strip_create_args_for_remediation(
+        "gh pr create -B develop --title t"
+    ) == "--title t"
+
+
+def test_strip_create_args_for_remediation_keeps_args_without_base():
+    assert hook._strip_create_args_for_remediation(
+        "gh pr create --title t --draft"
+    ) == "--title t --draft"
+
+
+def test_strip_create_args_for_remediation_preserves_non_create_command():
+    assert hook._strip_create_args_for_remediation("echo hello") == "echo hello"
 
 
 from unittest.mock import patch
@@ -388,6 +422,19 @@ def test_check_merge_no_pr_number_resolves_via_branch(monkeypatch):
     assert "PR #99" in d.reason
 
 
+def test_check_merge_no_pr_number_detached_head_allowed(monkeypatch):
+    monkeypatch.setattr(hook, "current_branch", lambda **kw: None)
+    d = hook.check_merge("gh pr merge --squash")
+    assert d.allow is True
+
+
+def test_check_merge_no_pr_number_branch_has_no_pr_allowed(monkeypatch):
+    monkeypatch.setattr(hook, "current_branch", lambda **kw: "feature/foo")
+    monkeypatch.setattr(hook, "pr_for_branch", lambda b, **kw: None)
+    d = hook.check_merge("gh pr merge --squash")
+    assert d.allow is True
+
+
 def test_check_merge_non_git_flow_head_allowed():
     """If the PR's headRefName is not Git Flow, pass through."""
     with _patch_pr_state(refs=("main", "chore/foo")):
@@ -416,6 +463,17 @@ def test_dispatch_chained_validates_first_failing_segment(monkeypatch):
     monkeypatch.setattr(hook, "has_develop_branch", lambda **kw: True)
     d = hook.dispatch("gh pr create --base main --title t && echo done")
     assert d.allow is False
+
+
+def test_dispatch_chained_create_then_merge_denies_on_merge_segment(monkeypatch):
+    monkeypatch.setattr(hook, "current_branch", lambda **kw: "feature/foo")
+    monkeypatch.setattr(hook, "has_develop_branch", lambda **kw: True)
+    monkeypatch.setattr(hook, "pr_refs_for", lambda n, **kw: ("main", "feature/foo"))
+    d = hook.dispatch("gh pr create --base develop --title t && gh pr merge 42 --squash")
+    assert d.allow is False
+    assert "PR #42" in d.reason
+    assert "main" in d.reason
+    assert "develop" in d.reason
 
 
 def test_dispatch_gh_pr_view_subcommand_passthrough():
