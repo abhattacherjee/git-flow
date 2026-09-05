@@ -314,6 +314,33 @@ EOF
   rm -f "$NOTES_FILE"
 }
 
+# wait_for_ci_checks — block until a PR's checks finish. Returns 0 when they
+# passed, 1 when they did not, 2 when this gh cannot run the gate at all.
+#
+# gh's stderr is deliberately NOT redirected here. This gate is the last thing
+# between a release branch and a squash merge to main, and silencing it made an
+# auth failure, a rate limit or an unsupported flag look exactly like a failing
+# check — the operator saw "CI checks failed" and no reason (#27).
+wait_for_ci_checks() {
+  local pr_num="$1" repo="$2"
+
+  # --fail-any is not in older gh. Without this probe the unknown-flag error
+  # comes back as a plain non-zero exit and reads as a CI failure, which sends
+  # the operator to look at a build that is perfectly healthy.
+  if ! gh pr checks --help 2>&1 | grep -q -- '--fail-any'; then
+    echo "✗ This gh does not support 'gh pr checks --fail-any'." >&2
+    echo "  Upgrade gh, then re-run /finish." >&2
+    return 2
+  fi
+
+  if ! gh pr checks "$pr_num" --repo "$repo" --watch --fail-any; then
+    echo "✗ CI checks did not pass on PR #${pr_num}." >&2
+    echo "  If gh printed an error above, that is the cause, not a failing check." >&2
+    return 1
+  fi
+  return 0
+}
+
 # Fallback: merge source branch to main via PR when direct push is blocked by branch protection.
 # Creates PR, waits for CI, merges, and syncs local main.
 merge_main_via_pr() {
@@ -339,16 +366,14 @@ See CHANGELOG.md for full details.
 
 Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
-)" 2>/dev/null) || die "Failed to create PR for $SOURCE_BRANCH → main"
+)") || die "Failed to create PR for $SOURCE_BRANCH → main (gh's error is above)"
 
   PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
   log_ok "Created PR #$PR_NUMBER: $SOURCE_BRANCH → main"
 
   # Wait for CI checks
   log "Waiting for CI checks on PR #$PR_NUMBER..."
-  if ! gh pr checks "$PR_NUMBER" --repo "$REPO" --watch --fail-any 2>/dev/null; then
-    die "CI checks failed on PR #$PR_NUMBER. Fix issues and re-run."
-  fi
+  wait_for_ci_checks "$PR_NUMBER" "$REPO" || die "Not merging PR #$PR_NUMBER."
   log_ok "CI checks passed on PR #$PR_NUMBER"
 
   # Squash merge PR — combines all commits into a single commit on main.

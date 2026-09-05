@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 # Test stub for `gh`. Reads MOCK_GH_STDOUT, MOCK_GH_STDERR, MOCK_GH_EXIT,
-# MOCK_GH_SLEEP
-# from env. Default: prints nothing, exits 0.
+# MOCK_GH_SLEEP and MOCK_GH_HELP from env.
+# Default: prints nothing, exits 0.
+
+# `--help` is answered from MOCK_GH_HELP, so a test can simulate a gh that
+# lacks --fail-any by setting it empty. Handled before everything else: the
+# support probe must not sleep or emit the stubbed stderr.
+for _arg in "$@"; do
+  if [[ "$_arg" == "--help" ]]; then
+    printf '%s' "${MOCK_GH_HELP-  --fail-any  Exit non-zero if any check fails}"
+    exit 0
+  fi
+done
 
 # Block before answering so a test can kill the caller mid-call.
 if [[ -n "${MOCK_GH_SLEEP:-}" ]]; then

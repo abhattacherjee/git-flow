@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 
 - `verify_pr_base` no longer leaves its stderr tempfile in `$TMPDIR` when `/finish` is interrupted while `gh pr view` is still running. (#8)
 - Docs said `/release 1.3.0` creates `release/1.3.0`. It creates `release/v1.3.0` — the command adds the `v`, and the branch-name hook requires it. Corrected in the README and the override guide. (#33)
+- `/finish` no longer hides gh's own errors while waiting for CI. An auth failure, a rate limit, or a gh too old for `--fail-any` used to look identical to a failing check, one step above the merge to `main`. gh's output now reaches you, and an unsupported gh is named as such. (#27)
 
 ### Security
 
