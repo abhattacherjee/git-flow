@@ -21,9 +21,43 @@ BRANCH_TYPE=""
 VERSION=""
 VERSION_NUMBER=""
 SOURCE_BRANCH=""
+# Computed in the bump phase, below the sourcing guard. Initialised here so
+# print_finish_summary is callable from a test under `set -u`. The empty string
+# is not a valid version, and the summary would report it as "develop bumped
+# to " with nothing after it — so the e2e runs assert the printed VALUE rather
+# than leaving that to `set -u`. Deliberately not asserted inside
+# print_finish_summary: that function runs after main is merged, tagged,
+# pushed and released, so aborting there would fail a release that had already
+# completed, and the EXIT handler would then warn that /finish "did not
+# complete" about a run that did.
+NEXT_VERSION=""
+# Set from BRANCH_TYPE during argument parsing, below the sourcing guard, and
+# read by create_github_release and merge_main_via_pr — both of which live
+# ABOVE the guard and are called directly by tests. Declared here so the script
+# owns it: a test that has to hand-set a global before calling a function is
+# supplying something the script should supply, and every time that has been
+# true in this file it hid a real gap.
+BRANCH_TYPE_CAPITALIZED=""
 DRY_RUN=false
 SKIP_CHANGELOG=false
 MERGE_VIA_PR=false
+# Set true when the CI gate returned 3 (no checks ever registered, so nothing
+# was gated). The ⚠️ two-liner wait_for_ci_checks prints scrolls hundreds of
+# lines off the top by the time /finish ends, and the closing summary read as
+# an unqualified success — so the warning is reprinted from this flag.
+CI_GATE_SKIPPED=false
+# Set true only once the squash merge to main is CONFIRMED — after gh returned
+# success, not before it was called. The ungated-merge warning tells the
+# operator what state main is in, and it may only say "main already has this
+# release" when something actually observed that.
+#
+# Two aborts sit between the CI gate and that confirmation, and they are NOT
+# equivalent. The wrong-base guard fires before gh is called at all, so main
+# is untouched. A `gh pr merge` failure is not that: gh can fail on a lost or
+# timed-out response to a merge the server already performed, so main may well
+# have moved. False in that direction is the reason the warning never asserts
+# main is clean either — see warn_if_ci_gate_skipped.
+MAIN_MERGED=false
 
 # ── Functions ──────────────────────────────────────────────────────
 
@@ -46,15 +80,19 @@ rm_verify_pr_base_tmp() {
   fi
 }
 
-# cleanup_gh_stderr — remove the tempfile on a normal path and put the EXIT
-# trap back as the caller had it. $1 is the caller's saved `trap -p` spec,
-# "" if there was none.
+# cleanup_gh_stderr — remove the tempfile on the normal path, so it is gone
+# before the run ends rather than only at exit.
 #
-# If the file cannot be removed, the trap stays armed so exit gets another
-# attempt, and the reason is printed rather than swallowed. Always returns 0,
-# so a cleanup problem cannot abort /finish under `set -e`.
+# It does NOT touch traps. The EXIT trap is armed once, globally, at the top of
+# this script and stays armed for the whole run; the save/restore dance this
+# function used to do was what made a warning handler hung off EXIT
+# unrecoverable (see git_flow_finish_on_exit).
+#
+# If the file cannot be removed, VERIFY_PR_BASE_TMP is deliberately left set so
+# the EXIT trap gets another attempt, and the reason is printed rather than
+# swallowed. Always returns 0, so a cleanup problem cannot abort /finish under
+# `set -e`.
 cleanup_gh_stderr() {
-  local saved="${1-}"
   if [[ -n "${VERIFY_PR_BASE_TMP:-}" ]]; then
     if ! rm -f -- "$VERIFY_PR_BASE_TMP"; then
       echo "⚠️  verify_pr_base: could not remove ${VERIFY_PR_BASE_TMP}; leaving the exit trap armed." >&2
@@ -62,34 +100,124 @@ cleanup_gh_stderr() {
     fi
     VERIFY_PR_BASE_TMP=""
   fi
-  trap - EXIT
-  if [[ -n "$saved" ]]; then
-    eval "$saved"
+  return 0
+}
+
+# warn_if_ci_gate_skipped — print the "nothing gated this" warning when /finish
+# ends without reaching the closing summary.
+#
+# handle_ci_gate_result sets CI_GATE_SKIPPED at the PR-merge step, and the
+# summary that reports it is ~360 lines later: two `|| die` calls plus a run of
+# unguarded commands under `set -e` (tag, checkout develop, pull, merge --no-ff,
+# fetch, bump-version.sh, add, commit). A back-merge conflict on develop is
+# ordinary. Without this handler the only trace of an ungated release is the ⚠️
+# from wait_for_ci_checks, hundreds of lines up the scrollback — which is the
+# exact problem the flag was added to solve.
+#
+# It does NOT gate on the exit status. `$?` inside an EXIT trap is 0 when the
+# script is killed by a signal (measured: SIGTERM and SIGHUP both arrive here
+# as 0, though the script itself exits 143 and 129), and a dropped SSH session
+# while /finish blocks in `gh pr checks --watch` is precisely the case this
+# warning exists for. CI_GATE_SKIPPED alone decides whether to print; `rc` only
+# supplies the "(exit N)" detail, which is omitted when there is none.
+#
+# The one thing that must stay true on both branches is what it says about
+# main. MAIN_MERGED is the only evidence that the squash merge landed, so the
+# not-merged wording claims nothing either way: a signal landing between gh's
+# server-side merge and the log_ok that records it leaves the flag false while
+# main has in fact moved.
+#
+# print_finish_summary clears CI_GATE_SKIPPED only when its own copy of the
+# warning was actually WRITTEN, so a completed run warns exactly once and a run
+# whose stdout is gone still warns here. stdout and stderr are separate
+# descriptors: `finish | head` closes the first and leaves the second healthy,
+# and clearing the flag on a message that reached nobody would leave an ungated
+# merge to main entirely unreported.
+warn_if_ci_gate_skipped() {
+  local rc="$1"
+  ${CI_GATE_SKIPPED:-false} || return 0
+  local detail=""
+  if [[ "$rc" -ne 0 ]]; then
+    detail=" (exit ${rc})"
+  fi
+  echo "" >&2
+  echo "⚠️  NO CI GATE RAN, and /finish did not complete${detail}." >&2
+  echo "    No checks ever registered on the PR to main, so nothing gated" >&2
+  echo "    ${VERSION:-this release}." >&2
+  if ${MAIN_MERGED:-false}; then
+    echo "    It WAS squash-merged to main: that merge is already on the remote" >&2
+    echo "    and is NOT undone by this failure. Check the build on main." >&2
+  else
+    echo "    /finish stopped before it could confirm the merge to main. Check" >&2
+    echo "    whether main already carries ${VERSION:-this release} before you" >&2
+    echo "    retry, revert or force-push anything." >&2
   fi
   return 0
 }
 
+# git_flow_finish_on_exit — the script's ONE EXIT handler, armed below.
+#
+# It was previously verify_pr_base's job to arm and disarm an EXIT trap around
+# its own tempfile, saving and restoring whatever the caller had. That made
+# arming any other EXIT handler unsafe: cleanup_gh_stderr returns early when
+# `rm` fails, without restoring, so a handler armed by the caller was silently
+# dropped on that path (measured: normal path restored the caller's trap and
+# the warning fired; the rm-failure path left `rm_verify_pr_base_tmp` armed and
+# the warning never ran). Arming one handler here instead is strictly more
+# coverage: only `set -eu`, the variable initialisations and the function
+# definitions run ahead of it, none of which can create a tempfile or set
+# CI_GATE_SKIPPED — so it is live before anything it has to clean up can exist,
+# which is earlier than verify_pr_base could ever manage. It also removes the
+# whole class of trap-composition bugs.
+#
+# `local rc=$?` must be the first statement: it is the status the script is
+# exiting with, and any command run before it would overwrite it.
+#
+# `|| true` on BOTH calls is load-bearing. Errexit is live inside an EXIT trap,
+# so a handler whose call fails never reaches its next line. Each call can fail
+# for its own reason: rm_verify_pr_base_tmp ends in a bare `rm -f`, which fails
+# when the path is a directory or its parent is read-only; and
+# warn_if_ci_gate_skipped ends in `echo`s to stderr, which fail when stderr is
+# closed — a `/finish 2>&-`, or a dropped pty. Either one, unguarded, both
+# swallowed what came after it and rewrote the status the script was exiting
+# with (measured: an abort that exits 2 came out as 1).
+#
+# Guarded at the call site rather than inside each callee, so the guarantee
+# lives at the point that depends on it: whatever any callee does, the rest of
+# this handler still runs and `return 0` still preserves `rc`.
+git_flow_finish_on_exit() {
+  local rc=$?
+  rm_verify_pr_base_tmp || true
+  warn_if_ci_gate_skipped "$rc" || true
+  return 0
+}
+
+# EXIT is the whole mechanism and the only trap wanted here. Bash runs an EXIT
+# trap on the way out, including when it dies from a fatal signal. The signal
+# shows in the SCRIPT's exit status (143 for TERM, 129 for HUP) but NOT in the
+# `$?` the handler sees, which is 0 — hence warn_if_ci_gate_skipped not gating
+# on it. A RETURN trap would not cover this: under a signal verify_pr_base
+# never returns.
+#
+# Do NOT add TERM or HUP. Trapping them without re-raising makes the shell
+# survive the signal and resume, and the statement right after verify_pr_base
+# is `gh pr merge --squash` against main — so a dropped SSH session would merge
+# to main and exit 0. EXIT alone cleans up and still lets the signal kill.
+#
+# Armed at the top level, so it is also armed when this file is SOURCED by a
+# test — which is how the tempfile-under-signal tests reach it at all.
+trap 'git_flow_finish_on_exit' EXIT
+
 verify_pr_base() {
   local pr_num="$1" expected_base="$2"
-  local actual_base gh_stderr saved_traps=""
-  # Arm cleanup BEFORE mktemp. Creating the file first leaves a window where it
-  # exists with nothing guarding it, and a signal landing there still leaks —
-  # which is the very bug this closes.
-  #
-  # EXIT is the whole mechanism and the only trap wanted here. Bash runs an EXIT
-  # trap on the way out, including when it dies from a fatal signal, and the
-  # signal still shows in the exit status. A RETURN trap would not cover this:
-  # under a signal the function never returns.
-  #
-  # Do NOT add TERM or HUP. Trapping them without re-raising makes the shell
-  # survive the signal and resume, and the statement after this call is
-  # `gh pr merge --squash` against main — so a dropped SSH session would merge
-  # to main and exit 0. EXIT alone cleans up and still lets the signal kill.
-  #
-  # cleanup_gh_stderr clears EXIT wholesale, so nothing else in this script may
-  # install an EXIT trap that has to outlive a verify_pr_base call.
-  saved_traps=$(trap -p EXIT)
-  trap 'rm_verify_pr_base_tmp' EXIT
+  local actual_base gh_stderr
+  # Cleanup is already armed: git_flow_finish_on_exit is trapped on EXIT at the
+  # top of this script, before any function here can run, so it is live before
+  # mktemp rather than around it. Creating the file first and arming after
+  # leaves a window where it exists with nothing guarding it, and a signal
+  # landing there still leaks — which is the very bug this closes. This
+  # function therefore installs no trap of its own, and nothing here may
+  # install one: an EXIT trap set here would clobber the global handler.
 
   # Take the NAME first, then create the file. `VAR=$(mktemp ...)` looks atomic
   # but is not: mktemp's child creates the file and only then does the parent
@@ -122,10 +250,10 @@ verify_pr_base() {
     elif [[ "$gh_stderr" == "/dev/null" ]]; then
       echo "    (gh stderr unavailable: mktemp failed)" >&2
     fi
-    cleanup_gh_stderr "$saved_traps"
+    cleanup_gh_stderr
     return 0
   fi
-  cleanup_gh_stderr "$saved_traps"
+  cleanup_gh_stderr
   if [[ "$actual_base" != "$expected_base" ]]; then
     cat >&2 <<EOM
 ✗ ABORTING: PR #${pr_num} has base "${actual_base}", expected "${expected_base}".
@@ -314,37 +442,166 @@ EOF
   rm -f "$NOTES_FILE"
 }
 
-# wait_for_ci_checks — block until a PR's checks finish. Returns 0 when they
-# passed, 1 when they did not, 2 when this gh cannot run the gate at all.
+# wait_for_ci_checks — block until a PR's checks finish.
+#   0  every check passed
+#   1  gh did not report all checks passing — a failing check, or gh itself
+#      failing (auth, rate limit, an unknown flag)
+#   3  no checks registered after a bounded wait — nothing to gate on
 #
-# gh's stderr is deliberately NOT redirected here. This gate is the last thing
-# between a release branch and a squash merge to main, and silencing it made an
-# auth failure, a rate limit or an unsupported flag look exactly like a failing
-# check — the operator saw "CI checks failed" and no reason (#27).
+# GIT_FLOW_CHECKS_GRACE — seconds to wait for check runs to register before
+# concluding a repo has no CI (default 60; set 0 to skip the wait on a repo
+# you know has no CI).
+# GIT_FLOW_CHECKS_POLL — seconds between polls inside that wait (default 5).
+#
+# Both are validated as whole numbers before use. Unvalidated, they were not
+# merely sloppy: on bash 3.2 `GIT_FLOW_CHECKS_GRACE=1e9` makes every `[[ $waited
+# -ge $grace ]]` fail with "value too great for base" and compare false, so
+# /finish spins forever, holding the release branch open with the PR to main
+# created but never merged (merge_main_via_pr resets local main to origin/main
+# before it gets here, so neither local nor remote main carries the merge at
+# that point); `abc` kills the script with "unbound variable" without ever
+# naming the variable; and `-5` skips the gate outright. A zero poll is
+# rejected too — it turns the wait into a busy-loop hammering the API.
+#
+# A leading zero is rejected as well, and that is not pedantry: bash reads
+# `08` and `010` as octal. `GIT_FLOW_CHECKS_GRACE=08` errors "value too great
+# for base" on every `[[ $waited -ge $grace ]]` — non-fatal inside `[[ ]]`, and
+# it evaluates FALSE, so /finish hangs exactly like `1e9`. `POLL=08` is worse
+# in a different way: the same error in `waited=$((waited + 08))` is FATAL, so
+# the script dies after one sleep. `POLL=010` is valid octal 8, so the sleep is
+# a true 10 seconds but `waited` advances by 8 — at the default grace of 60
+# that is 80 seconds of waiting, not 60. And `POLL=00` slips past the `0)` arm
+# below and busy-loops the API. `0?*` matches any value with a character after
+# a leading zero, which leaves plain `0` accepted by this arm — legitimate for
+# GRACE (gate immediately), and rejected two lines below for POLL, which needs
+# its own `0)` arm because a zero poll busy-loops.
+#
+# The gate call's output is deliberately not redirected. This gate is the last
+# thing before the squash merge to main, and hiding it is what kept a dead
+# gate invisible for four months (#27): the flag passed here used to be
+# `--fail-any`, which no gh has ever had, so every run died on `unknown flag`
+# and was reported to the operator as "CI checks failed" against a perfectly
+# green build.
+#
+# GitHub registers check runs a few seconds after a PR opens, and
+# `gh pr checks --watch` does NOT wait for them to appear — it reports on the
+# runs it can already see and returns immediately (measured: 0s, exit 1) when
+# there are none. So "no checks reported" straight after opening a PR means
+# "not registered yet" far more often than "this repo has no CI". Only a
+# bounded wait tells those apart, and getting it wrong merges to main with no
+# gate at all. The grace loop below runs the classification call (no
+# `--watch`) on its own, discarding that call's own exit code — its stderr is
+# what decides whether to keep waiting, not its exit status.
+#
+# The classification call captures STDERR ONLY (`2>&1 >/dev/null` — order
+# matters: dup stderr onto the capture first, THEN send stdout to
+# /dev/null). Without `--watch`, gh renders a full checks TABLE on stdout,
+# and "no checks reported on ..." is a separate diagnostic gh prints on
+# stderr. That table's rows come from whatever app posted the commit
+# status — a check's name or description is third-party text. Capturing
+# both channels together (plain `2>&1`) means a check merely named or
+# described "no checks reported" makes this treat a genuinely red build as
+# "nothing to gate on" and wave it into the squash merge to main.
+#
+# `--fail-fast` requires `--watch` (gh rejects it on its own) and stops waiting
+# once something is already red. gh checks Failed before Pending, so with
+# `--watch` this returns 1 for a red build and never 8; exit 8 cannot happen
+# here — the gate call always runs with `--watch`.
 wait_for_ci_checks() {
-  local pr_num="$1" repo="$2"
+  local pr_num="$1" repo="$2" detail waited=0
+  # `-` not `:-`: an explicitly empty GIT_FLOW_CHECKS_GRACE= is a mistake worth
+  # naming, not something to silently paper over with the default.
+  local grace="${GIT_FLOW_CHECKS_GRACE-60}" poll="${GIT_FLOW_CHECKS_POLL-5}"
 
-  # --fail-any is not in older gh. Without this probe the unknown-flag error
-  # comes back as a plain non-zero exit and reads as a CI failure, which sends
-  # the operator to look at a build that is perfectly healthy.
-  if ! gh pr checks --help 2>&1 | grep -q -- '--fail-any'; then
-    echo "✗ This gh does not support 'gh pr checks --fail-any'." >&2
-    echo "  Upgrade gh, then re-run /finish." >&2
-    return 2
+  case "$grace" in
+    ''|*[!0-9]*|0?*) die "GIT_FLOW_CHECKS_GRACE must be a whole number of seconds with no leading zeros, got '${grace}'." ;;
+  esac
+  case "$poll" in
+    ''|*[!0-9]*|0?*) die "GIT_FLOW_CHECKS_POLL must be a whole number of seconds with no leading zeros, got '${poll}'." ;;
+    0) die "GIT_FLOW_CHECKS_POLL must be at least 1 second; 0 would busy-loop." ;;
+  esac
+
+  while :; do
+    detail=$(gh pr checks "$pr_num" --repo "$repo" 2>&1 >/dev/null) || true
+    case "$detail" in
+      *"no checks reported"*) ;;   # not registered yet — keep waiting
+      *)
+        # Checks exist, or gh itself failed. Either way do not swallow what gh
+        # said — swallowing gh's diagnostic is the bug this whole change fixes.
+        # A healthy `gh pr checks` says nothing on stderr, so this prints only
+        # when gh actually spoke (e.g. "HTTP 502: Bad gateway").
+        if [[ -n "$detail" ]]; then
+          printf '%s\n' "$detail" >&2
+        fi
+        break
+        ;;
+    esac
+    if [[ $waited -ge $grace ]]; then
+      echo "⚠️  No checks reported on ${repo} for PR #${pr_num} after ${waited}s." >&2
+      echo "    Nothing to gate on — continuing with no CI gate." >&2
+      return 3
+    fi
+    # This sleep is the whole wait. `waited` advances by $poll whether or not
+    # any time actually passed, so deleting or shortening this line leaves the
+    # loop counting to $grace in milliseconds and merging to main ungated on a
+    # repo whose checks simply had not registered yet.
+    sleep "$poll"
+    waited=$((waited + poll))
+  done
+
+  if gh pr checks "$pr_num" --repo "$repo" --watch --fail-fast; then
+    return 0
   fi
 
-  if ! gh pr checks "$pr_num" --repo "$repo" --watch --fail-any; then
-    echo "✗ CI checks did not pass on PR #${pr_num}." >&2
-    echo "  If gh printed an error above, that is the cause, not a failing check." >&2
-    return 1
-  fi
-  return 0
+  echo "✗ CI checks did not pass on PR #${pr_num}." >&2
+  echo "  gh's output is above. If it shows an error rather than a failing check, that is the cause." >&2
+  return 1
+}
+
+# resolve_pr_number — parse a PR number out of `gh pr create`'s stdout URL
+# into PR_NUMBER (bash's dynamic scoping means this sets the caller's `local
+# PR_NUMBER` when called from inside merge_main_via_pr), aborting immediately
+# if none is found.
+#
+# `grep -oE '[0-9]+$'` silently returned empty on any URL/error format that
+# doesn't end in digits, and under `set -e` that failure died with NO
+# message — right after the script had already reported the PR created.
+#
+# Sets PR_NUMBER directly rather than echoing it back through `$(...)`: a
+# `die` (which calls `exit`) reached through a command substitution only
+# kills that subshell, so the guard would silently pass on empty output
+# instead of aborting the real script.
+#
+# Split out of merge_main_via_pr so it can be unit tested directly, the same
+# way wait_for_ci_checks is.
+resolve_pr_number() {
+  local pr_url="$1"
+  PR_NUMBER=$(printf '%s\n' "$pr_url" | sed -n 's#.*/pull/\([0-9][0-9]*\).*#\1#p' | tail -1)
+  [[ -n "$PR_NUMBER" ]] || die "Could not read a PR number from gh's output: '${pr_url}'"
+}
+
+# handle_ci_gate_result — turn wait_for_ci_checks' three-way return code into
+# operator-facing logging, and abort the merge on anything but "gate passed"
+# or "no gate to run" (3). Split out of merge_main_via_pr so it can be unit
+# tested directly — this is the exact call site that used to run
+# `wait_for_ci_checks ... || die ...` followed by an unconditional log_ok,
+# which printed "CI checks passed" even on the no-checks-configured path.
+handle_ci_gate_result() {
+  local rc="$1" pr_num="$2"
+  case "$rc" in
+    0) log_ok "CI checks passed on PR #${pr_num}" ;;
+    # Not a skip like "no version files changed": this one means main was
+    # merged with nothing gating it. Record it so the closing summary can say
+    # so too — by then the ⚠️ from wait_for_ci_checks is far off screen.
+    3) CI_GATE_SKIPPED=true; log_skip "No CI gate ran on PR #${pr_num}" ;;
+    *) die "Not merging PR #${pr_num}." ;;
+  esac
 }
 
 # Fallback: merge source branch to main via PR when direct push is blocked by branch protection.
 # Creates PR, waits for CI, merges, and syncs local main.
 merge_main_via_pr() {
-  local PR_URL PR_NUMBER
+  local PR_URL PR_NUMBER CI_RC
 
   log "Direct push to main blocked (branch protection?). Falling back to PR merge..."
 
@@ -368,13 +625,17 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
 )") || die "Failed to create PR for $SOURCE_BRANCH → main (gh's error is above)"
 
-  PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+  resolve_pr_number "$PR_URL"
   log_ok "Created PR #$PR_NUMBER: $SOURCE_BRANCH → main"
 
   # Wait for CI checks
   log "Waiting for CI checks on PR #$PR_NUMBER..."
-  wait_for_ci_checks "$PR_NUMBER" "$REPO" || die "Not merging PR #$PR_NUMBER."
-  log_ok "CI checks passed on PR #$PR_NUMBER"
+  # Under `set -e` a bare `wait_for_ci_checks ...` statement trips errexit the
+  # instant it returns non-zero, before its result could be inspected — `||
+  # CI_RC=$?` captures the status without the compound statement itself failing.
+  CI_RC=0
+  wait_for_ci_checks "$PR_NUMBER" "$REPO" || CI_RC=$?
+  handle_ci_gate_result "$CI_RC" "$PR_NUMBER"
 
   # Squash merge PR — combines all commits into a single commit on main.
   # Release notes are captured via GitHub Release (from CHANGELOG.md),
@@ -387,12 +648,122 @@ EOF
     || die "Failed to merge PR #$PR_NUMBER"
 
   log_ok "Squash-merged PR #$PR_NUMBER to main"
+  # Only now is the merge a fact. Set immediately after the confirmation, and
+  # never earlier: everything above this line can still abort with main
+  # untouched, and the ungated-merge warning reads this flag to decide what to
+  # tell the operator about main's state.
+  MAIN_MERGED=true
 
   # Sync local main with remote
   git checkout main
   git pull origin main
 
   MERGE_VIA_PR=true
+}
+
+# push_main_or_fallback — push the merged main, and fall back to the PR path
+# when the push is refused.
+#
+# git's own reason is captured, not discarded. `2>/dev/null` here was the same
+# defect as #27: a push to main fails for plenty of reasons that are not branch
+# protection (a stale ref, no network, a bad credential), and throwing the
+# message away sends the operator into the PR fallback with the actual cause
+# already gone.
+#
+# On the ordering: `2>&1 >/dev/null` dups stderr onto the capture first, THEN
+# sends stdout to /dev/null, so only git's stderr is captured. Measured on
+# git 2.x: `git push` writes NOTHING to stdout — the "To <remote> ... [new
+# branch]" line, "Everything up-to-date", and every fatal all go to stderr, on
+# success and on failure alike. So today plain `2>&1` would capture the same
+# bytes. The ordering is kept because it states which stream is being captured
+# rather than leaving it to chance, and because a porcelain/quiet flag added
+# later could start writing to stdout. What must NOT come back is `2>/dev/null`
+# — that is #27 on the push path, and it is what this function exists to stop.
+#
+# Split out of the main flow, above the sourcing guard, so the capture and the
+# reprint are reachable from a test — the same move already made for
+# wait_for_ci_checks, resolve_pr_number and handle_ci_gate_result.
+push_main_or_fallback() {
+  local PUSH_ERR=""
+  if PUSH_ERR=$(git push origin main:main 2>&1 >/dev/null); then
+    log_ok "Pushed to origin/main"
+  else
+    if [[ -n "$PUSH_ERR" ]]; then
+      printf '%s\n' "$PUSH_ERR" >&2
+    fi
+    merge_main_via_pr
+  fi
+}
+
+# print_finish_summary — the closing report, including the "nothing gated this
+# release" warning.
+#
+# Lives above the sourcing guard so a test can CALL it. It used to sit inline
+# at the bottom of the script, where nothing could reach it: the test on it
+# regex-extracted the `if $CI_GATE_SKIPPED` block out of this file and ran that
+# text standalone, which proves the block prints correctly if something runs it
+# and cannot tell whether anything does. An `exit 0` above the block made the
+# warning unreachable without disturbing that test at all. Same structural
+# cause as the untested CI-gate wiring and the untested push capture: nothing
+# below the sourcing guard can be reached by sourcing the file.
+print_finish_summary() {
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  Git Flow Finish Complete: $VERSION"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  echo "  $SOURCE_BRANCH → main (GitHub Release $VERSION) → develop"
+  echo "  develop bumped to $NEXT_VERSION"
+  echo "  Source branch deleted (local + remote)"
+  echo ""
+  if $CI_GATE_SKIPPED; then
+    # The flag is cleared only if these writes SUCCEEDED, so the EXIT handler
+    # is never told "already reported" about a message that went nowhere.
+    #
+    # `&&` rather than a group: the status of a `{ ...; }` is only its LAST
+    # command, so a group would clear the flag whenever the final `echo`
+    # happened to succeed. Chained, any failed write short-circuits.
+    #
+    # KNOWN: the false branch of this condition — writes fail, flag stays set —
+    # is currently UNREACHABLE, and that is recorded here rather than left for
+    # someone to rediscover. Both ways stdout can die take the shell out before
+    # this line is reached:
+    #
+    #   `finish | head`  the reader closes the pipe, the first banner `echo`
+    #                    takes SIGPIPE, and the shell dies (exit 141) long
+    #                    before the warning block.
+    #   `finish >&-`     the first banner `echo` fails EBADF and errexit aborts
+    #                    print_finish_summary at that line.
+    #
+    # In BOTH cases the warning still reaches the operator, because the EXIT
+    # handler runs on a fatal signal as well as on an abort and writes to
+    # stderr, which is a different descriptor and still healthy. That is the
+    # property that actually matters, and it is tested.
+    #
+    # The condition is kept, not simplified away, because its TRUE branch runs
+    # on every normal release — it is what makes a completed run warn exactly
+    # once — and because the false branch becomes live the moment the banner
+    # above stops aborting. Anyone making that change must keep this clear
+    # conditional: pairing a non-aborting banner with an unconditional clear
+    # hands the handler a cleared flag for an undelivered warning, and an
+    # ungated merge to main then goes entirely unreported.
+    #
+    # Do not try to prove the false branch by closing fd 1. A closed fd 1 is
+    # not a sound model of a dead stdout: the next `$(...)` anywhere in the
+    # shell allocates fd 1 for its pipe, so "stdout" silently becomes that
+    # pipe and the measurement reports whatever it likes. Measured — a probe
+    # reading /dev/fd/1 came back holding the shell's own pending stdout.
+    if echo "  ⚠️  NO CI GATE RAN. No checks ever registered on the PR to main, so" &&
+       echo "      $VERSION was merged and released with nothing gating it." &&
+       echo "      Check the build on main before relying on this release." &&
+       echo ""; then
+      CI_GATE_SKIPPED=false
+    fi
+  fi
+  if $DRY_RUN; then
+    echo "  [DRY RUN — no changes were made]"
+    echo ""
+  fi
 }
 
 # Allow the file to be sourced for testing without invoking the main flow.
@@ -490,12 +861,7 @@ EOF
 
   log_ok "Merged $SOURCE_BRANCH into main (local)"
 
-  # Try to push; if branch protection blocks it, fall back to PR merge
-  if ! git push origin main:main 2>/dev/null; then
-    merge_main_via_pr
-  else
-    log_ok "Pushed to origin/main"
-  fi
+  push_main_or_fallback
 fi
 
 # ── Phase 2: Create Tag ───────────────────────────────────────────
@@ -658,18 +1024,6 @@ fi
 
 # ── Summary ────────────────────────────────────────────────────────
 
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Git Flow Finish Complete: $VERSION"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "  $SOURCE_BRANCH → main (GitHub Release $VERSION) → develop"
-echo "  develop bumped to $NEXT_VERSION"
-echo "  Source branch deleted (local + remote)"
-echo ""
-if $DRY_RUN; then
-  echo "  [DRY RUN — no changes were made]"
-  echo ""
-fi
+print_finish_summary
 
 fi  # end: if [[ "${BASH_SOURCE[0]}" == "${0}" ]]
