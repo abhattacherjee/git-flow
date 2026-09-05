@@ -9,7 +9,7 @@ A Claude Code plugin that brings the [Git Flow branching model](https://nvie.com
 | Command | What it does |
 |---|---|
 | `/feature <name>` | Cuts `feature/<name>` from `develop`, pushes with tracking |
-| `/release <version>` | Cuts `release/<version>` from `develop`, bumps version files, updates `CHANGELOG.md` |
+| `/release <version>` | Cuts `release/v<version>` from `develop`, bumps version files, updates `CHANGELOG.md`. A leading `v` is added if you omit it. |
 | `/hotfix` | Cuts `hotfix/<auto-version>` from `main`, auto-increments the patch from the latest release tag |
 | `/finish` | Merges the current branch to its target(s), tags releases/hotfixes, bumps `develop` to the next dev cycle, pushes everything, creates a GitHub release for tags |
 | `/flow-status` | Shows current branch type, sync state, active branches, what `/finish` would do, and any drift from Git Flow conventions |
@@ -105,7 +105,7 @@ This pulls the latest release tag from GitHub. Pin to a specific version with `/
 ### Planned release
 
 ```
-/release 1.3.0                      # creates release/1.3.0, bumps versions, updates CHANGELOG
+/release 1.3.0                      # creates release/v1.3.0, bumps versions, updates CHANGELOG
 … edit CHANGELOG entries on the release branch …
 /finish                             # merges to main + develop, tags v1.3.0, bumps develop to 1.3.1, creates GitHub release
 ```
