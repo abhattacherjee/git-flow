@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - `verify_pr_base` no longer leaves its stderr tempfile in `$TMPDIR` when `/finish` is interrupted while `gh pr view` is still running. (#8)
+- Docs said `/release 1.3.0` creates `release/1.3.0`. It creates `release/v1.3.0` — the command adds the `v`, and the branch-name hook requires it. Corrected in the README and the override guide. (#33)
 
 ### Security
 
