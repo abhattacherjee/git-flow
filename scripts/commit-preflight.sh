@@ -15,6 +15,11 @@
 set -e
 
 # Project-scoped token path (must match require-preflight.py)
+# TRUST NOTE: this script executes code from the working tree (the test suite,
+# and scripts/pre-commit.sh). Running it on a checkout you have not reviewed
+# runs that branch's code on your machine. That is inherent to testing before
+# committing, not a defect — but do not run preflight on an unreviewed branch.
+
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_KEY="$(git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 if [ -n "$PROJECT_KEY" ] && [ -d "$PROJECT_KEY" ]; then
@@ -121,7 +126,7 @@ CHECKS_PASSED=true
 # ── Secret scanning (always runs) ────────────────────────────
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🔐 Running secret scan..."
-if ./scripts/pre-commit.sh; then
+if (cd "$PROJECT_DIR" && ./scripts/pre-commit.sh); then
     CHECKS_RUN="${CHECKS_RUN}secrets,"
 else
     echo "❌ Secret scan failed"
@@ -147,7 +152,31 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "🧪 Running tests..."
 
 # __HARDEN_TEST_START__
-echo "⏭️  No test runner detected — skipping tests"
+# This repo's suite is tests/run.sh (pytest under the hood). Run it, and fail
+# the preflight when it fails. Without this the section printed "no test runner
+# detected" and the preflight reported PASSED having checked only for secrets —
+# a gate that reports success without performing the check.
+#
+# Two deliberate choices:
+#
+#   - A MISSING tests/run.sh fails rather than skips. This repo has a suite, so
+#     its absence means a bad checkout or a deleted runner, not a repo without
+#     tests. Skipping there would recreate the same silent gate one level down:
+#     delete the runner and every commit passes again.
+#   - Paths are anchored to $PROJECT_DIR rather than the caller's cwd, so the
+#     runner cannot be resolved out of a different tree when preflight is
+#     invoked from a subdirectory or with an unexpected working directory.
+if [ -f "$PROJECT_DIR/tests/run.sh" ]; then
+  if (cd "$PROJECT_DIR" && bash tests/run.sh); then
+    CHECKS_RUN="${CHECKS_RUN}tests,"
+  else
+    echo "❌ Tests failed"
+    CHECKS_PASSED=false
+  fi
+else
+  echo "❌ $PROJECT_DIR/tests/run.sh not found — refusing to attest tests"
+  CHECKS_PASSED=false
+fi
 # __HARDEN_TEST_END__
 
 echo ""

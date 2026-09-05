@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- `commit-preflight.sh` now runs the test suite. The test section was left at the `/harden-repo` placeholder, so it printed "No test runner detected" and the preflight reported PASSED having checked only for secrets — a gate that reported success without performing the check. A failing suite now blocks the commit.
 - `verify_pr_base` no longer leaves its stderr tempfile in `$TMPDIR` when `/finish` is interrupted while `gh pr view` is still running. (#8)
 - Docs said `/release 1.3.0` creates `release/1.3.0`. It creates `release/v1.3.0` — the command adds the `v`, and the branch-name hook requires it. Corrected in the README and the override guide. (#33)
 - `/finish` could never pass its CI gate. It asked gh for `--fail-any`, a flag gh has never had, so every release that went through the pull-request path died on `unknown flag` — reported as "CI checks failed" against a green build, with gh's actual error hidden by a redirect. The gate now uses `--fail-fast` and shows gh's output. It also waits up to 60s for checks to register before deciding a repo has no CI — set `GIT_FLOW_CHECKS_GRACE=0` to skip that wait. If no checks ever appear, `/finish` says so — at the time and again in the closing summary, which used to read as an unqualified success — and merges without a CI gate. (#27)
