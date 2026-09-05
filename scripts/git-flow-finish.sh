@@ -33,10 +33,29 @@ MERGE_VIA_PR=false
 # Fails open on gh errors so the hook layer remains the source of truth.
 # Spec: docs/superpowers/specs/2026-05-02-pr-base-enforcement-design.md
 # ---------------------------------------------------------------------------
+# cleanup_gh_stderr — remove verify_pr_base's stderr tempfile and drop the
+# signal trap guarding it. No-op when mktemp failed and the path is /dev/null,
+# in which case no trap was set either.
+cleanup_gh_stderr() {
+  if [[ "$1" != "/dev/null" ]]; then
+    rm -f -- "$1"
+    trap - EXIT TERM HUP
+  fi
+}
+
 verify_pr_base() {
   local pr_num="$1" expected_base="$2"
   local actual_base gh_stderr
   gh_stderr=$(mktemp "${TMPDIR:-/tmp}/verify_pr_base.XXXXXX" 2>/dev/null) || gh_stderr=/dev/null
+  # The `gh pr view` below blocks for as long as the network takes, and that is
+  # the only window where the tempfile exists with nothing yet to remove it. A
+  # RETURN trap does not fire when the shell is killed there — the function
+  # never returns — so bind the path into an EXIT-family trap, which does, and
+  # drop it again on each normal path. This function owns EXIT/TERM/HUP for the
+  # script; nothing else here sets one.
+  if [[ "$gh_stderr" != "/dev/null" ]]; then
+    trap "rm -f -- $(printf '%q' "$gh_stderr")" EXIT TERM HUP
+  fi
   if ! actual_base=$(gh pr view "$pr_num" --json baseRefName --jq '.baseRefName' 2>"$gh_stderr"); then
     # gh failure: emit a diagnostic so post-hoc forensics survive, then
     # fail open and trust the hook layer to enforce. Header prints
@@ -47,10 +66,10 @@ verify_pr_base() {
     elif [[ "$gh_stderr" == "/dev/null" ]]; then
       echo "    (gh stderr unavailable: mktemp failed)" >&2
     fi
-    [[ "$gh_stderr" != "/dev/null" ]] && rm -f "$gh_stderr"
+    cleanup_gh_stderr "$gh_stderr"
     return 0
   fi
-  [[ "$gh_stderr" != "/dev/null" ]] && rm -f "$gh_stderr"
+  cleanup_gh_stderr "$gh_stderr"
   if [[ "$actual_base" != "$expected_base" ]]; then
     cat >&2 <<EOM
 ✗ ABORTING: PR #${pr_num} has base "${actual_base}", expected "${expected_base}".

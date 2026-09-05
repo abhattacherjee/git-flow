@@ -2,6 +2,10 @@
 # Test stub for `gh`. Reads MOCK_GH_STDOUT, MOCK_GH_STDERR, MOCK_GH_EXIT
 # from env. Default: prints nothing, exits 0.
 
+# Block before answering so a test can kill the caller mid-call.
+if [[ -n "${MOCK_GH_SLEEP:-}" ]]; then
+  sleep "$MOCK_GH_SLEEP"
+fi
 if [[ -n "${MOCK_GH_STDOUT:-}" ]]; then
   printf '%s' "$MOCK_GH_STDOUT"
 fi
