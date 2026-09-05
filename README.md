@@ -149,6 +149,25 @@ Two environment variables let you point the commands at non-default branch names
 | `GIT_FLOW_MAIN_BRANCH` | `main` | Production branch name |
 | `GIT_FLOW_DEVELOP_BRANCH` | `develop` | Integration branch name |
 
+Two more tune the CI gate `/finish` runs before it merges a release PR to `main`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GIT_FLOW_CHECKS_GRACE` | `60` | Seconds to wait for check runs to register before deciding the repo has no CI. Set `0` to skip the wait. |
+| `GIT_FLOW_CHECKS_POLL` | `5` | Seconds between polls during that wait. Must be 1 or more. |
+
+GitHub registers check runs a few seconds after a PR opens, and `gh pr checks --watch` does not
+wait for them — it reports on what it can already see. Straight after `gh pr create` that looks
+identical to "this repo has no CI", so `/finish` waits `GIT_FLOW_CHECKS_GRACE` seconds before
+believing it. On a repo you know has no CI, `GIT_FLOW_CHECKS_GRACE=0` skips the wait. If no checks
+ever appear, `/finish` says so both at the time and again in the closing summary, and merges
+without a CI gate.
+
+Both variables must be whole numbers written without a leading zero — `10`, not `010`. Anything
+else aborts with a message naming the variable. The leading-zero rule is not style: bash reads
+`08` and `010` as octal, so `GIT_FLOW_CHECKS_GRACE=010` would wait 8 seconds and `08` would fail
+every comparison and hang.
+
 ## Gotchas worth knowing
 
 The skill includes detailed write-ups for these — quick summary so you know they exist:

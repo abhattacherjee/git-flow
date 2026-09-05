@@ -1,16 +1,138 @@
 #!/usr/bin/env bash
-# Test stub for `gh`. Reads MOCK_GH_STDOUT, MOCK_GH_STDERR, MOCK_GH_EXIT,
-# MOCK_GH_SLEEP
-# from env. Default: prints nothing, exits 0.
+# Test stub for `gh`. Reads from env:
+#   MOCK_GH_ARGS_FILE     if set, each invocation's argv (space-joined) is
+#                         appended to this file as one line, before anything
+#                         else. Also the fallback source for the
+#                         MOCK_GH_DETAIL_SEQ counter file path.
+#   MOCK_GH_SLEEP         seconds to sleep before answering (gate call / default path)
+#   MOCK_GH_STDOUT        stdout to print (gate call / default path)
+#   MOCK_GH_STDERR        stderr to print (gate call / default path)
+#   MOCK_GH_EXIT          exit code, default 0 (gate call / default path)
+#   MOCK_GH_DETAIL        STDERR for the `gh pr checks` classification call
+#                         (i.e. `gh pr checks ...` without `--watch`) —
+#                         single value used for every classification call.
+#                         Real gh puts its "no checks reported on ..."
+#                         diagnostic on stderr, not stdout — this mirrors
+#                         that channel so `2>&1 >/dev/null` in the real
+#                         script exercises the same path it does against gh.
+#   MOCK_GH_DETAIL_STDOUT stdout for the classification call — the checks
+#                         TABLE real gh renders there when there's no
+#                         `--watch`. Independent of MOCK_GH_DETAIL/_SEQ; used
+#                         to simulate a check whose (third-party) name or
+#                         description happens to contain "no checks
+#                         reported", to prove that text never reaches the
+#                         classification decision.
+#   MOCK_GH_DETAIL_SEQ    `|`-separated list of STDERR values for the
+#                         classification call: the Nth classification call
+#                         returns the Nth element, and the last element repeats
+#                         once the list is exhausted. Overrides MOCK_GH_DETAIL
+#                         when set. Needs a counter file to track the call
+#                         count across separate process invocations: taken from
+#                         MOCK_GH_DETAIL_SEQ_COUNTER, else MOCK_GH_ARGS_FILE
+#                         with `.seq` appended. With neither set this stub
+#                         EXITS 97 with a loud message rather than guessing a
+#                         path. It used to fall back to a $PPID-keyed temp
+#                         path, but each `gh` runs inside its own command
+#                         substitution subshell, so $PPID differed per call:
+#                         every invocation made a fresh counter, the sequence
+#                         silently degraded to always returning element 1, and
+#                         orphaned .seq files piled up in $TMPDIR.
+#   MOCK_GH_DETAIL_SEQ_COUNTER
+#                         explicit path for that counter file. Must be unique
+#                         per test and stable across the calls of one test.
+#   MOCK_GH_DETAIL_EXIT   exit code for the classification call, default 0
+#   MOCK_GH_STDOUT_<SUB>  per-subcommand stdout, overriding MOCK_GH_STDOUT for
+#   MOCK_GH_EXIT_<SUB>    that one subcommand (and likewise the exit code).
+#                         <SUB> is the first two argv words uppercased and
+#                         joined with an underscore: MOCK_GH_STDOUT_PR_VIEW,
+#                         MOCK_GH_EXIT_PR_MERGE, MOCK_GH_STDOUT_RELEASE_VIEW.
+#                         A single flat MOCK_GH_STDOUT cannot drive a run that
+#                         makes several DIFFERENT gh calls — one script run
+#                         asks `pr view` for a base branch, `release view` for
+#                         a body length and `pr create` for a URL, and one
+#                         answer for all three is not a usable fixture.
+#
+# Default: prints nothing, exits 0.
+
+if [[ -n "${MOCK_GH_ARGS_FILE:-}" ]]; then
+  printf '%s\n' "$*" >> "$MOCK_GH_ARGS_FILE"
+fi
+
+# Only `gh pr checks` (wait_for_ci_checks' gate + its follow-up classification
+# call) gets special-cased. Every other subcommand (view, create, release
+# edit, ...) falls through to the plain STDOUT/STDERR/EXIT stub below, which
+# answers any call from MOCK_GH_STDOUT/STDERR/EXIT. Keep that fallthrough: it
+# is the contract every non-checks caller is written against.
+if [[ "$1" == "pr" && "$2" == "checks" ]]; then
+  for _arg in "$@"; do
+    if [[ "$_arg" == "--watch" ]]; then
+      # The gate call itself: behave like the default path below.
+      if [[ -n "${MOCK_GH_SLEEP:-}" ]]; then
+        sleep "$MOCK_GH_SLEEP"
+      fi
+      if [[ -n "${MOCK_GH_STDOUT:-}" ]]; then
+        printf '%s' "$MOCK_GH_STDOUT"
+      fi
+      if [[ -n "${MOCK_GH_STDERR:-}" ]]; then
+        printf '%s' "$MOCK_GH_STDERR" >&2
+      fi
+      exit "${MOCK_GH_EXIT:-0}"
+    fi
+  done
+
+  # No --watch: the classification call wait_for_ci_checks makes, either once
+  # (to tell a failing check apart from no-checks-configured) or repeatedly
+  # (the grace loop, waiting for checks to register). Real gh renders the
+  # checks table on stdout and its own diagnostics on stderr — mirror that
+  # split rather than putting everything on one channel.
+  if [[ -n "${MOCK_GH_DETAIL_STDOUT:-}" ]]; then
+    printf '%s' "$MOCK_GH_DETAIL_STDOUT"
+  fi
+  if [[ -n "${MOCK_GH_DETAIL_SEQ:-}" ]]; then
+    if [[ -n "${MOCK_GH_DETAIL_SEQ_COUNTER:-}" ]]; then
+      counter_file="$MOCK_GH_DETAIL_SEQ_COUNTER"
+    elif [[ -n "${MOCK_GH_ARGS_FILE:-}" ]]; then
+      counter_file="${MOCK_GH_ARGS_FILE}.seq"
+    else
+      echo "mock gh: MOCK_GH_DETAIL_SEQ needs MOCK_GH_DETAIL_SEQ_COUNTER or MOCK_GH_ARGS_FILE" >&2
+      exit 97
+    fi
+    n=$(( $(cat "$counter_file" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "$n" > "$counter_file"
+
+    IFS='|' read -r -a _seq <<< "$MOCK_GH_DETAIL_SEQ"
+    idx=$(( n <= ${#_seq[@]} ? n - 1 : ${#_seq[@]} - 1 ))
+    printf '%s' "${_seq[$idx]}" >&2
+  else
+    printf '%s' "${MOCK_GH_DETAIL:-}" >&2
+  fi
+  exit "${MOCK_GH_DETAIL_EXIT:-0}"
+fi
+
+# Per-subcommand overrides, keyed on the first two argv words. Nothing changes
+# for a test that sets only MOCK_GH_STDOUT/MOCK_GH_EXIT: the keyed variables
+# are looked up first and fall back to the flat ones when unset.
+_sub=$(printf '%s_%s' "${1:-}" "${2:-}" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9_' '_')
+_sub_stdout="MOCK_GH_STDOUT_${_sub}"
+_sub_exit="MOCK_GH_EXIT_${_sub}"
 
 # Block before answering so a test can kill the caller mid-call.
 if [[ -n "${MOCK_GH_SLEEP:-}" ]]; then
   sleep "$MOCK_GH_SLEEP"
 fi
-if [[ -n "${MOCK_GH_STDOUT:-}" ]]; then
+# `+set`, not `:-`: a key deliberately set to "" must mean "this subcommand
+# prints nothing", not "fall back to the flat value". verify_pr_base's
+# fail-open path is reached precisely when gh prints nothing, so a stub that
+# cannot express empty output cannot drive it.
+if [[ -n "${!_sub_stdout+set}" ]]; then
+  printf '%s' "${!_sub_stdout}"
+elif [[ -n "${MOCK_GH_STDOUT:-}" ]]; then
   printf '%s' "$MOCK_GH_STDOUT"
 fi
 if [[ -n "${MOCK_GH_STDERR:-}" ]]; then
   printf '%s' "$MOCK_GH_STDERR" >&2
+fi
+if [[ -n "${!_sub_exit+set}" ]]; then
+  exit "${!_sub_exit}"
 fi
 exit "${MOCK_GH_EXIT:-0}"
