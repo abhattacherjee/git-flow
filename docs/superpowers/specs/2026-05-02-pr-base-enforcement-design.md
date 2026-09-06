@@ -432,6 +432,13 @@ Optional follow-up (not part of this issue): add `.github/workflows/ci.yml` that
 
 ## 13. Out of scope
 
+- Eliminating the time-of-check/time-of-use window between the final
+  `baseRefName` lookup and GitHub processing `gh pr merge`. The hook and
+  `verify_pr_base` each observe a snapshot; neither can atomically pin the PR's
+  base through the server-side merge. A writer or automation can retarget the
+  PR during that interval. Branch protection or a server-side rule is required
+  for prevention, while a post-merge base check can only detect the race after
+  the merge and guide remediation.
 - Auto-rewriting the user's command (block-and-instruct is conservative).
 - Sub-issue for harden-repo to also install a project-local copy of the hook (covered by the plugin-bundled hook for any repo using git-flow).
 - A dedicated GitHub Action that enforces base on the server side (defense beyond the local CLI; future work).

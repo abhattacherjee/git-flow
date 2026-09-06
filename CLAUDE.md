@@ -28,6 +28,9 @@ Install:
 - Releases branch from `develop`, merge to both `main` and `develop`
 - Hotfixes branch from `main`, merge to both `main` and `develop`
 - Run `./scripts/commit-preflight.sh` before every commit (enforced by the `require-preflight` hook)
+- The hook and `/finish` verify a PR's base immediately before merge, but GitHub
+  does not make that lookup and merge atomic. A concurrent PR retarget can still
+  win the interval; inspect the merged PR's recorded base when this matters.
 
 ## Releasing
 

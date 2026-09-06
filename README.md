@@ -77,6 +77,13 @@ The same matrix is enforced in-script by `verify_pr_base()` in
 `scripts/git-flow-finish.sh`, so `/finish` catches the failure even if
 the hook is somehow disabled.
 
+Both checks are pre-merge snapshots rather than an atomic server-side guard.
+A user or automation with write access can retarget the PR after the final
+`baseRefName` lookup and before GitHub processes `gh pr merge`. Review branch
+protection and the merged PR's recorded base when this race is part of your
+threat model; the plugin cannot guarantee the base remains unchanged during
+that interval.
+
 ### Updating
 
 ```
