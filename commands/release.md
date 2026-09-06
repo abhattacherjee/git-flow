@@ -116,6 +116,7 @@ Now update the CHANGELOG per step 3 below — move the `## [Unreleased]` entries
 
 ```bash
 git add CHANGELOG.md
+[[ ! -f "docs/release-notes/${VERSION}.md" ]] || git add "docs/release-notes/${VERSION}.md"
 git commit -m "chore(release): bump version to ${VERSION#v}
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
@@ -174,6 +175,17 @@ Generate changelog from commits since last tag, grouped by type:
 - [docs: commits]
 ```
 
+### 3a. Authored GitHub Release Notes
+
+Ask whether this release should use a shorter, product-facing GitHub release body. If yes,
+create `docs/release-notes/${VERSION}.md` on the release branch before running the staging
+and commit block above. Keep user-visible changes and useful section headings, but omit the
+engineering detail that remains available in `CHANGELOG.md`.
+
+`/finish` prefers this non-empty authored file. It also accepts
+`docs/release-notes/${VERSION#v}.md` and falls back to the version's `CHANGELOG.md` section
+when neither file exists, so existing repositories keep their current behavior.
+
 ### 4. Success Response
 
 ```
@@ -185,10 +197,11 @@ Target: main (after review)
 
 Next Steps:
 1. Review CHANGELOG.md for accuracy
-2. Run final tests
-3. Create PR to main: gh pr create --base main
-4. Get team approvals
-5. Run /finish to complete release (or /finalize-release if available)
+2. Review docs/release-notes/$VERSION.md if authored release notes were created
+3. Run final tests
+4. Create PR to main: gh pr create --base main
+5. Get team approvals
+6. Run /finish to complete release (or /finalize-release if available)
 
 Release Tips:
 - No new features on release branch — bug fixes only

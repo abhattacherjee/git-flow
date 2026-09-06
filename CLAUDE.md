@@ -32,7 +32,10 @@ Install:
 ## Releasing
 
 1. On `develop`: `/release minor` (or `patch`/`major`) — cuts `release/X.Y.Z`, runs `bump-version.sh`, updates CHANGELOG
-2. Edit CHANGELOG entries on the release branch, commit
-3. `/finish` — merges to `main`, tags `vX.Y.Z`, merges back to `develop`, bumps develop to next patch (per `commands/finish.md` step 4b), pushes everything, creates a GitHub release
+2. Edit CHANGELOG entries on the release branch. Optionally add concise, product-facing
+   notes at `docs/release-notes/vX.Y.Z.md`; `/finish` prefers that non-empty file and falls
+   back to the version's CHANGELOG section.
+3. Commit the release artifacts.
+4. `/finish` — merges to `main`, tags `vX.Y.Z`, merges back to `develop`, bumps develop to next patch (per `commands/finish.md` step 4b), pushes everything, creates a GitHub release
 
 `bump-version.sh` updates **both** `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` so the marketplace listing stays in sync. It validates the marketplace entry exists *before* touching `plugin.json` so a sync failure can't leave the two files drifted.
