@@ -58,6 +58,9 @@ CI_GATE_SKIPPED=false
 # have moved. False in that direction is the reason the warning never asserts
 # main is clean either — see warn_if_ci_gate_skipped.
 MAIN_MERGED=false
+# Path used to populate the current GitHub Release body. Kept global so the
+# caller can report the exact source selected by extract_release_notes.
+NOTES_SOURCE=""
 
 # ── Functions ──────────────────────────────────────────────────────
 
@@ -365,6 +368,41 @@ push_ref() {
   log_ok "Pushed to origin/$TARGET_REF ($COMMIT_SHA)"
 }
 
+# Populate a release-notes file from the first non-empty authored source, then
+# fall back to the current version's CHANGELOG section.
+extract_release_notes() {
+  local OUT="$1"
+  local AUTHORED
+
+  : > "$OUT"
+  NOTES_SOURCE=""
+
+  for AUTHORED in \
+    "docs/release-notes/${VERSION}.md" \
+    "docs/release-notes/${VERSION_NUMBER}.md"; do
+    if [[ -s "$AUTHORED" ]]; then
+      cat "$AUTHORED" > "$OUT"
+      NOTES_SOURCE="$AUTHORED"
+      return 0
+    fi
+  done
+
+  if [[ -f CHANGELOG.md ]]; then
+    awk -v ver="## [$VERSION_NUMBER]" '{
+      if (index($0, ver) == 1) { found = 1; next }
+      if (found == 1 && $0 ~ /^## \[/) exit
+      if (found == 1) print
+    }' CHANGELOG.md > "$OUT"
+
+    # Strip empty leading lines
+    if [[ -s "$OUT" ]]; then
+      sed -i.bak '/./,$!d' "$OUT" && rm -f "${OUT}.bak"
+    fi
+
+    NOTES_SOURCE="CHANGELOG.md"
+  fi
+}
+
 # Create a GitHub Release (which also creates the tag on the remote)
 create_github_release() {
   local TAG_NAME="$1"
@@ -376,26 +414,13 @@ create_github_release() {
   fi
 
   NOTES_FILE=$(mktemp)
-
-  # Extract the version's section from CHANGELOG.md
-  if [[ -f CHANGELOG.md ]]; then
-    awk -v ver="## [$VERSION_NUMBER]" '{
-      if (index($0, ver) == 1) { found = 1; next }
-      if (found == 1 && $0 ~ /^## \[/) exit
-      if (found == 1) print
-    }' CHANGELOG.md > "$NOTES_FILE"
-
-    # Strip empty leading lines
-    if [[ -s "$NOTES_FILE" ]]; then
-      sed -i.bak '/./,$!d' "$NOTES_FILE" && rm -f "${NOTES_FILE}.bak"
-    fi
-  fi
+  extract_release_notes "$NOTES_FILE"
 
   # Log extraction result for debugging
   if [[ -s "$NOTES_FILE" ]]; then
     local NOTES_LINES
     NOTES_LINES=$(wc -l < "$NOTES_FILE" | tr -d ' ')
-    log "Extracted $NOTES_LINES lines from CHANGELOG.md"
+    log "Release body: $NOTES_LINES lines from $NOTES_SOURCE"
   fi
 
   # Fallback if CHANGELOG.md missing or extraction yielded nothing
@@ -405,7 +430,7 @@ ${BRANCH_TYPE_CAPITALIZED} ${TAG_NAME}
 
 See CHANGELOG.md for full details.
 EOF
-    log "Using fallback release notes (CHANGELOG.md extraction empty)"
+    log "Using fallback release notes (no authored notes or CHANGELOG section)"
   fi
 
   # gh release create also creates the tag on the remote — no separate API call needed
