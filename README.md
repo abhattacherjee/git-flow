@@ -210,7 +210,7 @@ git-flow/
 ## See also
 
 - Companion plugins worth pairing with this one:
-  - `git-branch-cleanup` — audit and delete stale branches after merges
+  - `github-board:prune-branches` (from the `github-board` plugin; was `git-branch-cleanup`) — audit and delete stale branches after merges
   - `changelog-keeper` — generate `CHANGELOG.md` entries from commit history
 - [Original Git Flow post by Vincent Driessen](https://nvie.com/posts/a-successful-git-branching-model/)
 - [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — the format this plugin's `/release` flow assumes for `CHANGELOG.md`
