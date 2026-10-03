@@ -9,7 +9,7 @@ A Claude Code plugin that brings the [Git Flow branching model](https://nvie.com
 | Command | What it does |
 |---|---|
 | `/feature <name>` | Cuts `feature/<name>` from `develop`, pushes with tracking |
-| `/release <version>` | Cuts `release/<version>` from `develop`, bumps version files, updates `CHANGELOG.md` |
+| `/release <version>` | Cuts `release/v<version>` from `develop`, bumps version files, updates `CHANGELOG.md`. A leading `v` is added if you omit it. |
 | `/hotfix` | Cuts `hotfix/<auto-version>` from `main`, auto-increments the patch from the latest release tag |
 | `/finish` | Merges the current branch to its target(s), tags releases/hotfixes, bumps `develop` to the next dev cycle, pushes everything, creates a GitHub release for tags |
 | `/flow-status` | Shows current branch type, sync state, active branches, what `/finish` would do, and any drift from Git Flow conventions |
@@ -105,7 +105,7 @@ This pulls the latest release tag from GitHub. Pin to a specific version with `/
 ### Planned release
 
 ```
-/release 1.3.0                      # creates release/1.3.0, bumps versions, updates CHANGELOG
+/release 1.3.0                      # creates release/v1.3.0, bumps versions, updates CHANGELOG
 … edit CHANGELOG entries on the release branch …
 /finish                             # merges to main + develop, tags v1.3.0, bumps develop to 1.3.1, creates GitHub release
 ```
@@ -149,6 +149,25 @@ Two environment variables let you point the commands at non-default branch names
 | `GIT_FLOW_MAIN_BRANCH` | `main` | Production branch name |
 | `GIT_FLOW_DEVELOP_BRANCH` | `develop` | Integration branch name |
 
+Two more tune the CI gate `/finish` runs before it merges a release PR to `main`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GIT_FLOW_CHECKS_GRACE` | `60` | Seconds to wait for check runs to register before deciding the repo has no CI. Set `0` to skip the wait. |
+| `GIT_FLOW_CHECKS_POLL` | `5` | Seconds between polls during that wait. Must be 1 or more. |
+
+GitHub registers check runs a few seconds after a PR opens, and `gh pr checks --watch` does not
+wait for them — it reports on what it can already see. Straight after `gh pr create` that looks
+identical to "this repo has no CI", so `/finish` waits `GIT_FLOW_CHECKS_GRACE` seconds before
+believing it. On a repo you know has no CI, `GIT_FLOW_CHECKS_GRACE=0` skips the wait. If no checks
+ever appear, `/finish` says so both at the time and again in the closing summary, and merges
+without a CI gate.
+
+Both variables must be whole numbers written without a leading zero — `10`, not `010`. Anything
+else aborts with a message naming the variable. The leading-zero rule is not style: bash reads
+`08` and `010` as octal, so `GIT_FLOW_CHECKS_GRACE=010` would wait 8 seconds and `08` would fail
+every comparison and hang.
+
 ## Gotchas worth knowing
 
 The skill includes detailed write-ups for these — quick summary so you know they exist:
@@ -191,7 +210,7 @@ git-flow/
 ## See also
 
 - Companion plugins worth pairing with this one:
-  - `git-branch-cleanup` — audit and delete stale branches after merges
+  - `github-board:prune-branches` (from the `github-board` plugin; was `git-branch-cleanup`) — audit and delete stale branches after merges
   - `changelog-keeper` — generate `CHANGELOG.md` entries from commit history
 - [Original Git Flow post by Vincent Driessen](https://nvie.com/posts/a-successful-git-branching-model/)
 - [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — the format this plugin's `/release` flow assumes for `CHANGELOG.md`

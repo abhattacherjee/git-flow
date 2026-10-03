@@ -48,6 +48,14 @@ def test_create_correct_base_on_feature_allowed(temp_git_repo, gh_stub, run_hook
     assert out == ""
 
 
+def test_create_shell_var_base_allowed_with_warn_e2e(temp_git_repo, gh_stub, run_hook):
+    repo = temp_git_repo(branches=["main", "develop", "feature/test-block"], head="feature/test-block")
+    code, out, err = run_hook(_payload("gh pr create --base $BASE --title t"), repo)
+    assert code == 0
+    assert out == ""
+    assert "$BASE" in err
+
+
 # 4
 def test_merge_wrong_base_blocked(temp_git_repo, gh_stub, run_hook):
     repo = temp_git_repo(branches=["main", "develop", "feature/foo"], head="feature/foo")

@@ -79,10 +79,10 @@ beyond kebab-case (e.g., ticket prefixes like `feature/JIRA-123-description`).
 | Step | Action |
 |------|--------|
 | Validate | Semver format, newer than current |
-| Create | `git checkout -b release/<version>` from develop |
+| Create | `git checkout -b release/v<version>` from develop |
 | Bump | `npm version <ver> --no-git-tag-version` (single package.json) |
 | Changelog | Generate grouped changelog from commits |
-| Push | `git push -u origin release/<version>` |
+| Push | `git push -u origin release/v<version>` |
 
 **Override surface:** Override if you have:
 - Multiple `package.json` files (monorepo)

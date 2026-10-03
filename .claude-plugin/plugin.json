@@ -1,5 +1,5 @@
 {
   "name": "git-flow",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Git Flow branching workflow with slash commands and diagnostic tools"
 }
