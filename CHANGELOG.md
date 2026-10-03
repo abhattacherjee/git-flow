@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-10-03
+
 ### Changed
 
 - The related-skills list in `skills/git-flow/SKILL.md` and `README.md` now names `github-board:prune-branches`. The bare `git-branch-cleanup` skill moved into the `github-board` plugin (claude-code-skills#146) and is being removed. (#47)
