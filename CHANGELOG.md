@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- The related-skills list in `skills/git-flow/SKILL.md` and `README.md` now names `dev-flow:changelog` (was `changelog-keeper`, now part of the `dev-flow` plugin). See abhattacherjee/claude-code-skills#165.
+
 ## [2.3.1] - 2026-10-03
 
 ### Changed
