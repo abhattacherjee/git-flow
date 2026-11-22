@@ -14,12 +14,13 @@ harness does: process cwd and CLAUDE_PROJECT_DIR on the main checkout, payload
 from __future__ import annotations
 
 import ast
-import hashlib
+import contextlib
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -66,7 +67,12 @@ def _registered_hooks() -> list[str]:
     for entry in settings["hooks"]["PreToolUse"]:
         assert entry["matcher"] == "Bash", entry
         for hook in entry["hooks"]:
-            script = REPO_ROOT / hook["command"].split()[-1]
+            # Exactly `python3 <hook path>`: a wrapper such as
+            # `true .claude/hooks/x.py` would register a hook that never runs.
+            argv = shlex.split(hook["command"])
+            assert len(argv) == 2 and argv[0] == "python3", hook["command"]
+            assert argv[1].startswith(".claude/hooks/"), hook["command"]
+            script = REPO_ROOT / argv[1]
             assert script.is_file(), hook["command"]
             assert script.parent == HOOKS_DIR, hook["command"]
             names.append(script.name)
@@ -210,8 +216,11 @@ def test_dry_run_push_to_protected_branch_is_denied(worktree_layout):
     main, wt = worktree_layout
     result = _run("prevent-direct-push.py", "git push --dry-run origin develop", main, wt)
     assert _decision(result) == "deny", result
+    # The hook names no destination: its reason lists both protected branches
+    # as boilerplate. The only judged-state line is "Current branch: <name>".
+    # The worktree is on feature/x, so a deny here can only come from the
+    # destination.
     assert f"Current branch: {FEATURE}" in _reason(result), result
-    assert "develop" in _reason(result), result
 
 
 @pytest.mark.parametrize(
@@ -235,20 +244,41 @@ def test_branch_dependent_push_reads_branch_from_payload_cwd(
 
 
 @pytest.mark.parametrize(
-    ("command", "branch"),
+    "command",
     [
-        ("git push origin develop", "develop"),
-        ("git push origin HEAD:develop", "develop"),
-        ("git push origin main", "main"),
+        "git push origin develop",
+        "git push origin HEAD:develop",
+        "git push origin main",
+        f"git push --dry-run origin {FEATURE}:develop",
+        f"git push --dry-run origin {FEATURE}:main",
+        "git push --dry-run origin HEAD:develop",
     ],
 )
-def test_push_to_protected_branch_from_worktree_is_denied(worktree_layout, command, branch):
+def test_push_to_protected_branch_from_worktree_is_denied(worktree_layout, command):
+    # Explicit destinations, including `feature/x:develop`, are judged on the
+    # destination: a hook that ignores them and trusts the current branch
+    # (feature/x here) would allow every one of these.
     main, wt = worktree_layout
     result = _run("prevent-direct-push.py", command, main, wt)
     assert _decision(result) == "deny", result
-    # The worktree is on feature/x, so the judged line is the target, not boilerplate.
+    # The reason names no destination (see the dry-run test above); this line
+    # shows the deny came from the destination, not the current branch.
     assert f"Current branch: {FEATURE}" in _reason(result), result
-    assert branch in _reason(result), result
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"git push --dry-run origin {FEATURE}",
+        f"git push --dry-run origin {FEATURE}:{FEATURE}",
+        f"git push --dry-run origin HEAD:{FEATURE}",
+    ],
+)
+def test_explicit_feature_destination_from_worktree_is_allowed(worktree_layout, command):
+    # The mirror of the denials above: same shape, feature destination.
+    main, wt = worktree_layout
+    result = _run("prevent-direct-push.py", command, main, wt)
+    assert _decision(result) != "deny", result
 
 
 def test_bare_pr_create_from_worktree_passes_changelog_hook(worktree_layout):
@@ -290,44 +320,75 @@ def test_pr_create_without_changelog_entry_is_denied(worktree_layout):
 # --- require-preflight: the token is bound to a checkout -------------------
 
 
-def _write_token(main: Path, bound_to: Path) -> Path:
-    """Write the token commit-preflight.sh would write, bound to *bound_to*."""
-    common = os.path.realpath(
-        _git(main, "rev-parse", "--path-format=absolute", "--git-common-dir")
+def _token_path(checkout: Path) -> Path:
+    """The path require-preflight.py reads its token from (it hard-codes /tmp)."""
+    loader = (
+        "import importlib.util, sys\n"
+        "spec = importlib.util.spec_from_file_location('rp', sys.argv[1])\n"
+        "m = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(m)\n"
+        "print(m._get_token_path())\n"
     )
-    path = Path(f"/tmp/.preflight-token-{hashlib.md5(common.encode()).hexdigest()[:8]}")
-    now = int(time.time())
-    path.write_text(
-        json.dumps(
-            {
-                "created": now,
-                "expires": now + 300,
-                "staged_files": 0,
-                "checks_run": "lint",
-                "head": _git(bound_to, "rev-parse", "HEAD"),
-                "tree": _git(bound_to, "write-tree"),
-                "worktree": os.path.realpath(bound_to),
-            }
-        )
-    )
-    return path
+    env = _clean_env()
+    env["CLAUDE_PROJECT_DIR"] = str(checkout)
+    out = subprocess.run(
+        [sys.executable, "-c", loader, str(HOOKS_DIR / "require-preflight.py")],
+        env=env, capture_output=True, text=True, check=True, timeout=30,
+    ).stdout.strip()
+    return Path(out)
 
 
-def _remove_token(token: Path) -> None:
-    """Remove the token and the `<token>.lock` require-preflight.py leaves."""
-    token.unlink(missing_ok=True)
-    Path(str(token) + ".lock").unlink(missing_ok=True)
+@contextlib.contextmanager
+def _token_slot(main: Path):
+    """Own the shared /tmp token path for one test, or fail without touching it.
+
+    Hook and script both hard-code /tmp (no override). The path is keyed on
+    this test's fixture repo, so a clash means a leftover or another
+    checkout's file: refuse to overwrite it. Both the token and the
+    `<token>.lock` require-preflight.py leaves are removed afterwards.
+    """
+    token = _token_path(main)
+    lock = Path(str(token) + ".lock")
+    for path in (token, lock):
+        if path.exists():
+            pytest.fail(f"{path} already exists; refusing to overwrite or remove it")
+    try:
+        yield token
+    finally:
+        token.unlink(missing_ok=True)
+        lock.unlink(missing_ok=True)
+
+
+def _run_real_preflight(checkout: Path) -> None:
+    """Run the real scripts/commit-preflight.sh in *checkout* with a staged file.
+
+    `--skip-tests` stops after the token write: the secret scan, lint and the
+    full suite are skipped, and the token comes from the script's own
+    _preflight_write_token, so the test cannot drift from what it writes.
+    The script takes its project dir from its own location, so it is copied in.
+    """
+    (checkout / "scripts").mkdir(exist_ok=True)
+    shutil.copy(REPO_ROOT / "scripts" / "commit-preflight.sh", checkout / "scripts")
+    (checkout / "staged.txt").write_text("staged\n")
+    _git(checkout, "add", "staged.txt")
+    proc = subprocess.run(
+        ["bash", "scripts/commit-preflight.sh", "--skip-tests", "fixture"],
+        cwd=checkout, env=_clean_env(), capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    assert "PREFLIGHT PASSED" in proc.stdout, proc.stdout
 
 
 def test_preflight_token_for_the_worktree_passes_a_worktree_commit(worktree_layout):
     # Payload cwd = worktree, process cwd = main. The token is bound to the
     # worktree, so the commit is allowed only if the hook checks the worktree.
     main, wt = worktree_layout
-    token = _write_token(main, wt)
-    try:
+    with _token_slot(main) as token:
+        _run_real_preflight(wt)
+        written = json.loads(token.read_text())
+        assert written["worktree"] == os.path.realpath(wt), written
+        # The token goes to the hook exactly as the script wrote it.
         result = _run("require-preflight.py", "git commit -m msg", main, wt)
-    finally:
-        _remove_token(token)
     assert _decision(result) != "deny", result
     assert "Preflight verified" in json.dumps(result), result
 
@@ -336,18 +397,15 @@ def test_preflight_token_for_main_blocks_a_worktree_commit(worktree_layout):
     # Mirror: a token bound to the main checkout must not cover a commit made
     # in the worktree.
     main, wt = worktree_layout
-    token = _write_token(main, main)
-    try:
+    with _token_slot(main):
+        _run_real_preflight(main)
         result = _run("require-preflight.py", "git commit -m msg", main, wt)
-    finally:
-        _remove_token(token)
     assert _decision(result) == "deny", result
     assert "another checkout" in _reason(result), result
 
 
 def test_token_path_agrees_between_script_and_hook(worktree_layout):
-    # The tests above write their own token. This pins that formula to the two
-    # real ones: the key computation lifted out of scripts/commit-preflight.sh,
+    # This pins the token path to the two real formulas: the key computation lifted out of scripts/commit-preflight.sh,
     # and the hook's _get_token_path(). Run from the main checkout and from the
     # linked worktree, both must give the same path.
     main, wt = worktree_layout
@@ -379,10 +437,6 @@ def test_token_path_agrees_between_script_and_hook(worktree_layout):
         ).stdout.strip()
         assert from_script.startswith("/tmp/.preflight-token-"), from_script
         assert from_script == from_hook, (from_script, from_hook)
-        # and the helper the tests use writes to that same path
-        written = _write_token(main, checkout)
-        _remove_token(written)
-        assert str(written) == from_hook
         paths.add(from_hook)
     assert len(paths) == 1, paths
 
