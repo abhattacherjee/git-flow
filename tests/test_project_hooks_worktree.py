@@ -37,7 +37,16 @@ EXPECTED_HOOKS = {
 
 
 def _clean_env() -> dict:
-    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    """The environment for fixture git calls and hook runs.
+
+    Drops every GIT_* variable, then isolates from the developer's global and
+    system git config (push.default=matching, hooksPath, ...) so a test result
+    cannot depend on the machine it runs on.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    return env
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -55,8 +64,12 @@ def _registered_hooks() -> list[str]:
     settings = json.loads(SETTINGS.read_text())
     names = []
     for entry in settings["hooks"]["PreToolUse"]:
+        assert entry["matcher"] == "Bash", entry
         for hook in entry["hooks"]:
-            names.append(Path(hook["command"].split()[-1]).name)
+            script = REPO_ROOT / hook["command"].split()[-1]
+            assert script.is_file(), hook["command"]
+            assert script.parent == HOOKS_DIR, hook["command"]
+            names.append(script.name)
     return names
 
 
@@ -78,6 +91,7 @@ def _build_layout(tmp_path: Path, main_branch: str, wt_branch: str):
     _git(main, "config", "user.email", "t@example.com")
     _git(main, "config", "user.name", "t")
     _git(main, "config", "commit.gpgsign", "false")
+    _git(main, "config", "push.default", "simple")
     (main / "CHANGELOG.md").write_text("# Changelog\n\n## [Unreleased]\n")
     _git(main, "add", "CHANGELOG.md")
     _git(main, "commit", "-q", "-m", "init")
@@ -196,6 +210,7 @@ def test_dry_run_push_to_protected_branch_is_denied(worktree_layout):
     main, wt = worktree_layout
     result = _run("prevent-direct-push.py", "git push --dry-run origin develop", main, wt)
     assert _decision(result) == "deny", result
+    assert f"Current branch: {FEATURE}" in _reason(result), result
     assert "develop" in _reason(result), result
 
 
@@ -215,7 +230,8 @@ def test_branch_dependent_push_reads_branch_from_payload_cwd(
     main, wt = mirror_layout
     denied = _run("prevent-direct-push.py", command, main, wt)
     assert _decision(denied) == "deny", denied
-    assert "develop" in _reason(denied), denied
+    # The branch-specific line, not the boilerplate that names main and develop.
+    assert "Current branch: develop" in _reason(denied), denied
 
 
 @pytest.mark.parametrize(
@@ -230,6 +246,8 @@ def test_push_to_protected_branch_from_worktree_is_denied(worktree_layout, comma
     main, wt = worktree_layout
     result = _run("prevent-direct-push.py", command, main, wt)
     assert _decision(result) == "deny", result
+    # The worktree is on feature/x, so the judged line is the target, not boilerplate.
+    assert f"Current branch: {FEATURE}" in _reason(result), result
     assert branch in _reason(result), result
 
 
@@ -242,6 +260,9 @@ def test_bare_pr_create_from_worktree_passes_changelog_hook(worktree_layout):
         wt,
     )
     assert _decision(result) != "deny", result
+    # The hook says why it allowed; silence would be an early exit.
+    context = result["hookSpecificOutput"]["additionalContext"]
+    assert "Changelog check: 1 entries found under [Unreleased]" in context, result
 
 
 def test_pr_create_without_changelog_entry_is_denied(worktree_layout):
@@ -292,6 +313,12 @@ def _write_token(main: Path, bound_to: Path) -> Path:
     return path
 
 
+def _remove_token(token: Path) -> None:
+    """Remove the token and the `<token>.lock` require-preflight.py leaves."""
+    token.unlink(missing_ok=True)
+    Path(str(token) + ".lock").unlink(missing_ok=True)
+
+
 def test_preflight_token_for_the_worktree_passes_a_worktree_commit(worktree_layout):
     # Payload cwd = worktree, process cwd = main. The token is bound to the
     # worktree, so the commit is allowed only if the hook checks the worktree.
@@ -300,7 +327,7 @@ def test_preflight_token_for_the_worktree_passes_a_worktree_commit(worktree_layo
     try:
         result = _run("require-preflight.py", "git commit -m msg", main, wt)
     finally:
-        token.unlink(missing_ok=True)
+        _remove_token(token)
     assert _decision(result) != "deny", result
     assert "Preflight verified" in json.dumps(result), result
 
@@ -313,27 +340,76 @@ def test_preflight_token_for_main_blocks_a_worktree_commit(worktree_layout):
     try:
         result = _run("require-preflight.py", "git commit -m msg", main, wt)
     finally:
-        token.unlink(missing_ok=True)
+        _remove_token(token)
     assert _decision(result) == "deny", result
     assert "another checkout" in _reason(result), result
+
+
+def test_token_path_agrees_between_script_and_hook(worktree_layout):
+    # The tests above write their own token. This pins that formula to the two
+    # real ones: the key computation lifted out of scripts/commit-preflight.sh,
+    # and the hook's _get_token_path(). Run from the main checkout and from the
+    # linked worktree, both must give the same path.
+    main, wt = worktree_layout
+    script = (REPO_ROOT / "scripts" / "commit-preflight.sh").read_text()
+    start = script.index('PROJECT_KEY="$(git -C')
+    end_marker = 'TOKEN_FILE="/tmp/.preflight-token-${PROJECT_HASH}"'
+    end = script.index(end_marker) + len(end_marker)
+    snippet = script[start:end]
+    loader = (
+        "import importlib.util, sys\n"
+        "spec = importlib.util.spec_from_file_location('rp', sys.argv[1])\n"
+        "m = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(m)\n"
+        "print(m._get_token_path())\n"
+    )
+    paths = set()
+    for checkout in (main, wt):
+        env = _clean_env()
+        env["PROJECT_DIR"] = str(checkout)
+        from_script = subprocess.run(
+            ["bash", "-c", snippet + '\nprintf "%s" "$TOKEN_FILE"'],
+            env=env, capture_output=True, text=True, check=True, timeout=30,
+        ).stdout
+        env = _clean_env()
+        env["CLAUDE_PROJECT_DIR"] = str(checkout)
+        from_hook = subprocess.run(
+            [sys.executable, "-c", loader, str(HOOKS_DIR / "require-preflight.py")],
+            env=env, capture_output=True, text=True, check=True, timeout=30,
+        ).stdout.strip()
+        assert from_script.startswith("/tmp/.preflight-token-"), from_script
+        assert from_script == from_hook, (from_script, from_hook)
+        # and the helper the tests use writes to that same path
+        written = _write_token(main, checkout)
+        _remove_token(written)
+        assert str(written) == from_hook
+        paths.add(from_hook)
+    assert len(paths) == 1, paths
 
 
 # --- validate-branch-name: a relative `git -C` walks from the payload cwd --
 
 
 def test_branch_name_relative_git_dir_resolves_from_payload_cwd(worktree_layout, tmp_path):
-    # `ext` exists only in the worktree, as a link to a directory outside the
-    # project. Walked from the payload cwd it leaves the project, so the guard
-    # skips; with no usable payload cwd the relative path cannot be pinned, and
-    # "cannot tell" runs the guard.
+    # The same relative command both times; only where `ext` points changes.
+    # Pointing outside the project, the guard skips. Pointing inside it, the
+    # guard must still judge the name, so a hook that skips every redirected
+    # checkout fails here.
     main, wt = worktree_layout
     outside = tmp_path / "outside"
     outside.mkdir()
-    (wt / "ext").symlink_to(outside)
-    bad = "git checkout -b badname"
-    # Control: the same bad name, with no cd, is denied (not a silent skip).
-    denied = _run("validate-branch-name.py", bad, main, wt)
+    inside = main / "inside"
+    inside.mkdir()
+    cmd = "git -C ext checkout -b badname"
+    # Control: the same bad name, with no -C, is denied (not a silent skip).
+    denied = _run("validate-branch-name.py", "git checkout -b badname", main, wt)
     assert _decision(denied) == "deny", denied
     assert "badname" in _reason(denied), denied
-    skipped = _run("validate-branch-name.py", "git -C ext checkout -b badname", main, wt)
+    (wt / "ext").symlink_to(outside)
+    skipped = _run("validate-branch-name.py", cmd, main, wt)
     assert _decision(skipped) != "deny", skipped
+    (wt / "ext").unlink()
+    (wt / "ext").symlink_to(inside)
+    judged = _run("validate-branch-name.py", cmd, main, wt)
+    assert _decision(judged) == "deny", judged
+    assert "badname" in _reason(judged), judged
