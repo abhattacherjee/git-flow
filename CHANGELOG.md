@@ -8,6 +8,10 @@ All notable changes to this project will be documented in this file.
 
 - The related-skills list in `skills/git-flow/SKILL.md` and `README.md` now names `dev-flow:changelog` (was `changelog-keeper`, now part of the `dev-flow` plugin). See abhattacherjee/claude-code-skills#165.
 
+### Fixed
+
+- The four project hooks in `.claude/hooks/` now judge a command in the directory where it runs. They were copies of harden-repo v1.2.1–v1.2.2, which ignore the `cwd` in the hook payload, so in a worktree session a `feature/*` push was denied as "Direct push to develop" and `gh pr create` was blocked for a missing CHANGELOG entry, both judged against the main checkout. Refreshed `prevent-direct-push.py`, `require-preflight.py`, `update-changelog-before-pr.py` and `validate-branch-name.py` to the harden-repo 1.3.2 templates with `doctor --fix --safe`. `.claude/settings.json` is unchanged. `scripts/commit-preflight.sh` moved to the 1.3.2 template too, keeping this repo's test block: the new `require-preflight.py` refuses the old script's token, which is not bound to HEAD, the staged tree or the worktree, so every commit was blocked. The new `tests/test_project_hooks_worktree.py` runs the hooks the way the harness does, from the main checkout with the payload `cwd` on a worktree. Note: 1.3.2 denies more push forms than before, such as a push whose command it cannot read (a shell expansion or loop). (#54)
+
 ## [2.3.1] - 2026-10-03
 
 ### Changed
