@@ -155,11 +155,20 @@ commit SHA on the target branch. This means `git branch -d` fails with "not full
 merged" because the original commits aren't ancestors of the target. Always use
 `git branch -D` after verifying the PR was merged (`gh pr list --state all --head <branch>`).
 
-### Stale worktrees block checkout
-If `git checkout develop` fails with "already used by worktree", run:
-```bash
-git worktree prune   # Clean stale references to deleted worktree directories
-```
+### "already used by worktree" on checkout
+`git checkout develop` fails with "already used by worktree" when another worktree
+holds `develop`. There are two cases:
+
+- **Active worktree** (the directory exists, usually the main checkout). `/finish` and
+  `scripts/git-flow-finish.sh` handle this themselves from a linked worktree (#32). They
+  detach at `origin/<branch>`, merge and push, then fast-forward the main checkout when it
+  is clean and on that branch. Otherwise they leave it alone and print the command to run.
+  If no worktree holds the branch, `git fetch origin <b>:<b>` fast-forwards the local
+  branch ref without touching any working tree.
+- **Stale worktree** (the directory was deleted). Clean up the leftover entry:
+  ```bash
+  git worktree prune   # Clean stale references to deleted worktree directories
+  ```
 
 ### `--no-ff` is critical
 Always use `--no-ff` (no fast-forward) for merge commits. This preserves branch
@@ -240,5 +249,5 @@ Runtime install (read-only, served from cache):
 - **[references/override-guide.md](references/override-guide.md)** — full override guide with patterns, per-command surface, and checklist
 - **[references/merge-discipline.md](references/merge-discipline.md)** — PR-base targeting, the branch→base merge matrix, create-vs-merge-to-main, and the main-poisoning failure mode
 - `github-board:prune-branches` (from the `github-board` plugin; was `git-branch-cleanup`) — audit and delete stale branches after merges
-- `changelog-keeper` — generate CHANGELOG.md from commit history
+- `dev-flow:changelog` — generate CHANGELOG.md from commit history
 - `release-and-git-flow` (project-level) — hook workarounds and release pipeline

@@ -177,7 +177,7 @@ The skill includes detailed write-ups for these — quick summary so you know th
 - **Tag filtering for semver.** `git describe --tags --abbrev=0` picks any tag. Use `git tag -l 'v[0-9]*' --sort=-v:refname | head -1` to filter to semver tags only.
 - **Push hooks may block direct pushes.** Some repos guard `main`/`develop` with pre-push hooks. The skill documents the temp-branch + `gh api` ref-patch workaround.
 - **`grep -c` returns exit 1 on zero matches**, which kills bash scripts under `set -e`. The skill includes a `count_lines` helper that handles the empty case.
-- **Stale worktrees block checkout.** `git checkout develop` failing with "already used by worktree" → `git worktree prune`.
+- **"already used by worktree" on checkout.** If another live worktree holds the branch (usually the main checkout), `/finish` handles it from a linked worktree: it merges on a detached `HEAD`, then fast-forwards the main checkout when it is clean, or prints the command to run. If the worktree's directory was deleted, run `git worktree prune`.
 
 Ask the agent about any of these in conversation; the skill auto-loads when relevant.
 
@@ -211,7 +211,7 @@ git-flow/
 
 - Companion plugins worth pairing with this one:
   - `github-board:prune-branches` (from the `github-board` plugin; was `git-branch-cleanup`) — audit and delete stale branches after merges
-  - `changelog-keeper` — generate `CHANGELOG.md` entries from commit history
+  - `dev-flow:changelog` — generate `CHANGELOG.md` entries from commit history
 - [Original Git Flow post by Vincent Driessen](https://nvie.com/posts/a-successful-git-branching-model/)
 - [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — the format this plugin's `/release` flow assumes for `CHANGELOG.md`
 - [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
