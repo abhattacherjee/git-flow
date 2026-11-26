@@ -203,6 +203,49 @@ sync_main_checkout() { echo "unexpected sync $*" >&2; }
     assert "worktree remove" not in output
 
 
+def test_linked_pr_merged_path_deletes_remote_syncs_and_prints_cleanup(feature_pr_block, tmp_path):
+    """The merged path must delete the remote branch, sync develop, and print
+    both cleanup commands, in that order. Removing any one of those lines from
+    the linked block fails here (G-005)."""
+    log = tmp_path / "calls.log"
+    stubs = """
+LINKED=true
+CURRENT_BRANCH=feature/x
+MAIN_CHECKOUT='/m/main checkout'
+HERE='/m/linked tree'
+gh() {
+  echo "gh $*" >> "$LOG"
+  case "$1 $2" in
+    'pr list') echo 42 ;;
+    'pr view') echo MERGED ;;
+  esac
+}
+git() { echo "git $*" >> "$LOG"; }
+sync_main_checkout() { echo "sync $*" >> "$LOG"; }
+"""
+    result = subprocess.run(
+        ["bash", "-c", stubs + feature_pr_block],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "LOG": str(log)},
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    calls = log.read_text().splitlines()
+    wanted = [
+        "gh pr merge 42 --squash --delete-branch=false",
+        "gh api -X DELETE repos/{owner}/{repo}/git/refs/heads/feature/x",
+        "sync develop",
+        "git fetch --prune origin",
+    ]
+    positions = [calls.index(w) for w in wanted]
+    assert positions == sorted(positions), calls
+    assert result.stdout.splitlines()[-2:] == [
+        r"git -C /m/main\ checkout worktree remove /m/linked\ tree",
+        r"git -C /m/main\ checkout branch -D feature/x",
+    ], output
+
+
 def test_linked_local_fallback_prints_worktree_removal():
     template = TEMPLATE.read_text(encoding="utf-8")
     section = template.split("#### Local fallback (when no PR exists)\n")[1]
