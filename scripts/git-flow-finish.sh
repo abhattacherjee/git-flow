@@ -334,15 +334,17 @@ main_checkout_path() {
 }
 
 # Find the checkout that owns this branch before trying to advance it (#32).
+# Use wt_path because commands/finish.md runs a copy in the user's shell.
+# In zsh, the special variable path is tied to PATH.
 worktree_holding() {
-  local b="$1" entries line path=""
+  local b="$1" entries line wt_path=""
   if ! entries=$(git worktree list --porcelain); then
     return 1
   fi
   while IFS= read -r line; do
     case "$line" in
-      "worktree "*) path=${line#worktree } ;;
-      "branch refs/heads/$b") printf '%s\n' "$path"; return 0 ;;
+      "worktree "*) wt_path=${line#worktree } ;;
+      "branch refs/heads/$b") printf '%s\n' "$wt_path"; return 0 ;;
     esac
   done <<< "$entries"
   return 0

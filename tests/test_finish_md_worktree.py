@@ -1,6 +1,8 @@
 """Exercise the worktree pre-check embedded in the /finish template."""
 
+import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -116,6 +118,28 @@ def test_sync_develop_from_linked_worktree(precheck, worktrees, state):
         assert f"git -C {repo} switch develop" in output
 
 
+def test_sync_develop_from_linked_worktree_in_zsh(precheck, worktrees):
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh is not on PATH")
+
+    _, repo, linked = worktrees
+    assert _git(repo, "rev-parse", "develop") != _git(repo, "rev-parse", "origin/develop")
+
+    result = subprocess.run(
+        [zsh, "-c", precheck.decode("utf-8") + "sync_main_checkout develop"],
+        cwd=linked,
+        # Keep zsh's here-string temporary files inside the fixture.
+        env={**os.environ, "TMPPREFIX": str(repo.parent / "zsh")},
+        capture_output=True,
+        text=True,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "command not found" not in output, output
+    assert _git(repo, "rev-parse", "develop") == _git(repo, "rev-parse", "origin/develop"), output
+
+
 def test_main_checkout_is_not_linked(precheck, worktrees):
     _, repo, _ = worktrees
     result = _run_precheck(precheck, repo, 'echo "$LINKED"')
@@ -164,6 +188,14 @@ sync_main_checkout() { echo "unexpected sync $*" >&2; }
     assert result.returncode == expected, output
     assert "unexpected" not in output
     assert "worktree remove" not in output
+
+
+def test_linked_local_fallback_prints_worktree_removal():
+    template = TEMPLATE.read_text(encoding="utf-8")
+    section = template.split("#### Local fallback (when no PR exists)\n")[1]
+    section = section.split("### 4. Release Branch Finish\n")[0]
+    linked_block = section.split("For `LINKED=true`:\n\n```bash\n")[1].split("\n```")[0]
+    assert "worktree remove" in linked_block
 
 
 def test_template_fences_are_balanced():

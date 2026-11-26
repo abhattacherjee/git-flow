@@ -83,14 +83,14 @@ main_checkout_path() {
 }
 
 worktree_holding() {
-  local b="$1" entries line path=""
+  local b="$1" entries line wt_path=""
   if ! entries=$(git worktree list --porcelain); then
     return 1
   fi
   while IFS= read -r line; do
     case "$line" in
-      "worktree "*) path=${line#worktree } ;;
-      "branch refs/heads/$b") printf '%s\n' "$path"; return 0 ;;
+      "worktree "*) wt_path=${line#worktree } ;;
+      "branch refs/heads/$b") printf '%s\n' "$wt_path"; return 0 ;;
     esac
   done <<< "$entries"
   return 0
@@ -234,11 +234,12 @@ Co-Authored-By: Claude <noreply@anthropic.com>" || exit $?
 git push origin HEAD:develop || exit $?
 
 # Cleanup (unless --no-delete)
-git branch -D "$CURRENT_BRANCH" 2>/dev/null || true
-git push origin --delete "$CURRENT_BRANCH" 2>/dev/null || true
+git branch -D "$CURRENT_BRANCH" || true
+git push origin --delete "$CURRENT_BRANCH" || true
 
 sync_main_checkout develop
 git fetch --prune origin
+printf 'git -C %q worktree remove %q\n' "$MAIN_CHECKOUT" "$HERE"
 ```
 
 ### 4. Release Branch Finish
