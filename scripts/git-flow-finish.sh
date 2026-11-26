@@ -41,6 +41,13 @@ BRANCH_TYPE_CAPITALIZED=""
 DRY_RUN=false
 SKIP_CHANGELOG=false
 MERGE_VIA_PR=false
+LINKED=false
+MAIN_CHECKOUT=""
+MAIN_REF=main
+DEVELOP_REF=develop
+SYNC_WARNINGS=()
+MAIN_SYNC_WARNING=""
+DEVELOP_SYNC_WARNING=""
 # Set true when the CI gate returned 3 (no checks ever registered, so nothing
 # was gated). The ⚠️ two-liner wait_for_ci_checks prints scrolls hundreds of
 # lines off the top by the time /finish ends, and the closing summary read as
@@ -316,6 +323,125 @@ log_phase() {
 }
 
 die() { log_fail "$1"; exit 1; }
+
+# Git lists the main checkout first, even when /finish runs elsewhere (#32).
+# Keep in sync with commands/finish.md step 2b; tests/test_finish_md_worktree.py checks it.
+main_checkout_path() {
+  local entries first
+  entries=$(git worktree list --porcelain) || return 1
+  first=${entries%%$'\n'*}
+  [[ "$first" == "worktree "* ]] || return 1
+  printf '%s\n' "${first#worktree }"
+}
+
+# Find the checkout that owns this branch before trying to advance it (#32).
+# Use wt_path because commands/finish.md runs a copy in the user's shell.
+# In zsh, the special variable path is tied to PATH.
+worktree_holding() {
+  local b="$1" entries line wt_path=""
+  if ! entries=$(git worktree list --porcelain); then
+    return 1
+  fi
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) wt_path=${line#worktree } ;;
+      "branch refs/heads/$b") printf '%s\n' "$wt_path"; return 0 ;;
+    esac
+  done <<< "$entries"
+  return 0
+}
+
+# Resolve symlinks so two names for the main checkout compare equal (#32).
+is_linked_worktree() {
+  local main here
+  main=${MAIN_CHECKOUT:-$(main_checkout_path)} || return 2
+  here=$(git rev-parse --show-toplevel) || return 2
+  here=$(cd -- "$here" && pwd -P) || return 2
+  main=$(cd -- "$main" && pwd -P) || return 2
+  [[ "$here" != "$main" ]]
+}
+
+# A detached HEAD lets us merge and push while another checkout holds the branch (#32).
+enter_target() {
+  local b="$1"
+  if $LINKED; then
+    git fetch origin "$b"
+    git checkout --detach "origin/$b"
+    TARGET_REF=HEAD
+  else
+    git checkout "$b"
+    git pull origin "$b"
+    TARGET_REF="$b"
+  fi
+}
+
+# Keep every warning for the summary. Only a skipped ref update explains a mismatch (#32).
+warn_sync() {
+  local warning="$1"
+  case "${2:-}" in
+    main) MAIN_SYNC_WARNING="$warning" ;;
+    develop) DEVELOP_SYNC_WARNING="$warning" ;;
+  esac
+  SYNC_WARNINGS+=("$warning")
+  log "⚠️ $warning" || :
+}
+
+# After publication, fast-forward local refs where possible and preserve local work (#32).
+sync_main_checkout() {
+  local b="$1" holder current changes pull q
+  if ! holder=$(worktree_holding "$b"); then
+    warn_sync "Could not determine which worktree holds $b. Run: git worktree list --porcelain" "$b"
+  elif [[ -z "$holder" ]]; then
+    if ! git fetch origin "$b:$b"; then
+      warn_sync "Could not fast-forward local $b. Run: git fetch origin $b:$b" "$b"
+    fi
+    if [[ "$b" == develop ]]; then
+      if ! current=$(git -C "$MAIN_CHECKOUT" branch --show-current); then
+        warn_sync "Could not read the current branch in main checkout $MAIN_CHECKOUT. Run: git worktree list --porcelain"
+      elif [[ -n "$current" && "$current" != develop ]]; then
+        q=$(printf '%q' "$MAIN_CHECKOUT")
+        warn_sync "main checkout $MAIN_CHECKOUT is on $current, not develop; to use the merge run: git -C $q switch develop"
+      fi
+    fi
+  else
+    q=$(printf '%q' "$holder")
+    pull="git -C $q pull --ff-only origin $b"
+    if [[ ! -d "$holder" ]]; then
+      warn_sync "Worktree $holder holding $b is missing. If it was removed, run git worktree prune. If restored, run: $pull" "$b"
+    elif [[ "$holder" != "$MAIN_CHECKOUT" ]]; then
+      warn_sync "$b is checked out in another worktree at $holder. Run: $pull" "$b"
+    elif ! changes=$(git -C "$holder" status --porcelain --untracked-files=no); then
+      warn_sync "Could not check for changes in main checkout $holder; left $b as is. Run: $pull" "$b"
+    elif [[ -n "$changes" ]]; then
+      warn_sync "main checkout $holder has uncommitted changes; left $b as is. Run: $pull" "$b"
+    elif ! git -C "$holder" pull --ff-only origin "$b"; then
+      warn_sync "Could not fast-forward $b in main checkout $holder. Run: $pull" "$b"
+    fi
+  fi
+  return 0
+}
+
+# A sync warning explains only the local branch whose update was skipped (#32).
+verify_local_branch() {
+  local b="$1" warning="$2" local_sha remote_sha
+  if $LINKED; then
+    # A failed sync may have left the local branch missing.
+    local_sha=$(git rev-parse --verify "refs/heads/$b" 2>/dev/null) || local_sha=missing
+  else
+    git fetch origin "$b" 2>/dev/null
+    local_sha=$(git rev-parse "$b")
+  fi
+  remote_sha=$(git rev-parse "origin/$b" 2>/dev/null)
+  if [[ "$local_sha" == "$remote_sha" ]]; then
+    log_ok "$b in sync (local = remote)"
+  elif [[ -n "$warning" ]]; then
+    log_skip "$b out of sync: $warning"
+  elif [[ "$b" == develop ]]; then
+    log_fail "develop out of sync: local=$local_sha remote=$remote_sha"
+  else
+    log_fail "main out of sync"
+  fi
+}
 
 log_repo_context() {
   local toplevel remote
@@ -655,8 +781,8 @@ EOF
   MAIN_MERGED=true
 
   # Sync local main with remote
-  git checkout main
-  git pull origin main
+  enter_target main
+  MAIN_REF="$TARGET_REF"
 
   MERGE_VIA_PR=true
 }
@@ -685,7 +811,7 @@ EOF
 # wait_for_ci_checks, resolve_pr_number and handle_ci_gate_result.
 push_main_or_fallback() {
   local PUSH_ERR=""
-  if PUSH_ERR=$(git push origin main:main 2>&1 >/dev/null); then
+  if PUSH_ERR=$(git push origin "$MAIN_REF:main" 2>&1 >/dev/null); then
     log_ok "Pushed to origin/main"
   else
     if [[ -n "$PUSH_ERR" ]]; then
@@ -707,6 +833,7 @@ push_main_or_fallback() {
 # cause as the untested CI-gate wiring and the untested push capture: nothing
 # below the sourcing guard can be reached by sourcing the file.
 print_finish_summary() {
+  local warning
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "  Git Flow Finish Complete: $VERSION"
@@ -716,6 +843,13 @@ print_finish_summary() {
   echo "  develop bumped to $NEXT_VERSION"
   echo "  Source branch deleted (local + remote)"
   echo ""
+  if [[ ${#SYNC_WARNINGS[@]} -gt 0 ]]; then
+    log "Worktree sync warnings"
+    for warning in ${SYNC_WARNINGS[@]+"${SYNC_WARNINGS[@]}"}; do
+      log "⚠️ $warning"
+    done
+    echo ""
+  fi
   if $CI_GATE_SKIPPED; then
     # The flag is cleared only if these writes SUCCEEDED, so the EXIT handler
     # is never told "already reported" about a message that went nowhere.
@@ -835,6 +969,13 @@ fi
 
 log_ok "On $SOURCE_BRANCH, clean, all pushed"
 
+MAIN_CHECKOUT=$(main_checkout_path) || die "Could not find the main checkout"
+if is_linked_worktree; then
+  LINKED=true
+elif [[ $? -ne 1 ]]; then  # is_linked_worktree returns 1 for the main checkout and 2 for unresolved paths.
+  die "Could not resolve the worktree paths"
+fi
+
 # ── Phase 1: Merge to Main ────────────────────────────────────────
 
 log_phase "MERGE TO MAIN"
@@ -842,8 +983,8 @@ log_phase "MERGE TO MAIN"
 if $DRY_RUN; then
   log "[dry-run] Would merge $SOURCE_BRANCH into main"
 else
-  git checkout main
-  git pull origin main
+  enter_target main
+  MAIN_REF="$TARGET_REF"
 
   # Capitalize first letter (POSIX-compatible; ${VAR^} requires bash 4+ and macOS ships bash 3.2)
   BRANCH_TYPE_CAPITALIZED="$(echo "$BRANCH_TYPE" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
@@ -892,8 +1033,8 @@ log_phase "MERGE TO DEVELOP"
 if $DRY_RUN; then
   log "[dry-run] Would merge $SOURCE_BRANCH into develop"
 else
-  git checkout develop
-  git pull origin develop
+  enter_target develop
+  DEVELOP_REF="$TARGET_REF"
 
   git merge --no-ff "$SOURCE_BRANCH" -m "$(cat <<EOF
 Merge $SOURCE_BRANCH back into develop
@@ -971,7 +1112,7 @@ fi
 
 log_phase "PUSH DEVELOP"
 
-push_ref "develop" "develop"
+push_ref "develop" "$DEVELOP_REF"
 prune_stale_refs
 
 # ── Phase 7: Cleanup ──────────────────────────────────────────────
@@ -989,6 +1130,12 @@ else
   gh api "repos/$REPO/git/refs/heads/$SOURCE_BRANCH" -X DELETE 2>/dev/null && log_ok "Deleted remote $SOURCE_BRANCH" || log_skip "Remote $SOURCE_BRANCH already deleted"
 fi
 
+if $LINKED && ! $DRY_RUN; then
+  log_phase "SYNC MAIN CHECKOUT"
+  sync_main_checkout main
+  sync_main_checkout develop
+fi
+
 # ── Phase 8: Verify ───────────────────────────────────────────────
 
 log_phase "VERIFICATION"
@@ -997,20 +1144,23 @@ if $DRY_RUN; then
   log "[dry-run] Would verify main, develop, and tag are in sync"
 else
   # Verify current branch
-  FINAL_BRANCH=$(git branch --show-current)
-  [[ "$FINAL_BRANCH" == "develop" ]] && log_ok "On develop branch" || log_fail "Expected develop, on $FINAL_BRANCH"
+  if $LINKED; then
+    if ! git fetch origin main develop; then
+      log "⚠️ Could not refresh origin/main and origin/develop for verification. Comparing the last fetched refs."
+    fi
+    FINAL_HEAD=$(git rev-parse HEAD)
+    REMOTE_DEVELOP=$(git rev-parse origin/develop)
+    [[ "$FINAL_HEAD" == "$REMOTE_DEVELOP" ]] && log_ok "HEAD equals origin/develop" || log_fail "HEAD differs from origin/develop"
+  else
+    FINAL_BRANCH=$(git branch --show-current)
+    [[ "$FINAL_BRANCH" == "develop" ]] && log_ok "On develop branch" || log_fail "Expected develop, on $FINAL_BRANCH"
+  fi
 
   # Verify local = remote for develop
-  git fetch origin develop 2>/dev/null
-  LOCAL_SHA=$(git rev-parse develop)
-  REMOTE_SHA=$(git rev-parse origin/develop 2>/dev/null)
-  [[ "$LOCAL_SHA" == "$REMOTE_SHA" ]] && log_ok "develop in sync (local = remote)" || log_fail "develop out of sync: local=$LOCAL_SHA remote=$REMOTE_SHA"
+  verify_local_branch develop "$DEVELOP_SYNC_WARNING"
 
   # Verify local = remote for main
-  git fetch origin main 2>/dev/null
-  LOCAL_MAIN=$(git rev-parse main)
-  REMOTE_MAIN=$(git rev-parse origin/main 2>/dev/null)
-  [[ "$LOCAL_MAIN" == "$REMOTE_MAIN" ]] && log_ok "main in sync (local = remote)" || log_fail "main out of sync"
+  verify_local_branch main "$MAIN_SYNC_WARNING"
 
   # Verify GitHub Release (and tag) exists on remote
   if gh release view "$VERSION" --repo "$REPO" --json tagName --jq '.tagName' >/dev/null 2>&1; then
