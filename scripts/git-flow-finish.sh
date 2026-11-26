@@ -325,6 +325,7 @@ log_phase() {
 die() { log_fail "$1"; exit 1; }
 
 # Git lists the main checkout first, even when /finish runs elsewhere (#32).
+# Keep in sync with commands/finish.md step 2b; tests/test_finish_md_worktree.py checks it.
 main_checkout_path() {
   local entries first
   entries=$(git worktree list --porcelain) || return 1
@@ -387,7 +388,7 @@ warn_sync() {
 
 # After publication, fast-forward local refs where possible and preserve local work (#32).
 sync_main_checkout() {
-  local b="$1" holder current changes pull
+  local b="$1" holder current changes pull q
   if ! holder=$(worktree_holding "$b"); then
     warn_sync "Could not determine which worktree holds $b. Run: git worktree list --porcelain" "$b"
   elif [[ -z "$holder" ]]; then
@@ -398,11 +399,13 @@ sync_main_checkout() {
       if ! current=$(git -C "$MAIN_CHECKOUT" branch --show-current); then
         warn_sync "Could not read the current branch in main checkout $MAIN_CHECKOUT. Run: git worktree list --porcelain"
       elif [[ -n "$current" && "$current" != develop ]]; then
-        warn_sync "main checkout $MAIN_CHECKOUT is on $current, not develop; to use the merge run: git -C $MAIN_CHECKOUT switch develop"
+        q=$(printf '%q' "$MAIN_CHECKOUT")
+        warn_sync "main checkout $MAIN_CHECKOUT is on $current, not develop; to use the merge run: git -C $q switch develop"
       fi
     fi
   else
-    pull="git -C $holder pull --ff-only origin $b"
+    q=$(printf '%q' "$holder")
+    pull="git -C $q pull --ff-only origin $b"
     if [[ ! -d "$holder" ]]; then
       warn_sync "Worktree $holder holding $b is missing. If it was removed, run git worktree prune. If restored, run: $pull" "$b"
     elif [[ "$holder" != "$MAIN_CHECKOUT" ]]; then
@@ -969,7 +972,7 @@ log_ok "On $SOURCE_BRANCH, clean, all pushed"
 MAIN_CHECKOUT=$(main_checkout_path) || die "Could not find the main checkout"
 if is_linked_worktree; then
   LINKED=true
-elif [[ $? -ne 1 ]]; then
+elif [[ $? -ne 1 ]]; then  # is_linked_worktree returns 1 for the main checkout and 2 for unresolved paths.
   die "Could not resolve the worktree paths"
 fi
 

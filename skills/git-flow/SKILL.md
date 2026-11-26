@@ -163,6 +163,8 @@ holds `develop`. There are two cases:
   `scripts/git-flow-finish.sh` handle this themselves from a linked worktree (#32). They
   detach at `origin/<branch>`, merge and push, then fast-forward the main checkout when it
   is clean and on that branch. Otherwise they leave it alone and print the command to run.
+  If no worktree holds the branch, `git fetch origin <b>:<b>` fast-forwards the local
+  branch ref without touching any working tree.
 - **Stale worktree** (the directory was deleted). Clean up the leftover entry:
   ```bash
   git worktree prune   # Clean stale references to deleted worktree directories

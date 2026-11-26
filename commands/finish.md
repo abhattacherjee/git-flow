@@ -67,10 +67,9 @@ Put this whole block at the start of every later Bash call that uses `$LINKED`,
 
 <!-- sync-main-checkout:begin -->
 ```bash
+# Keep in sync with scripts/git-flow-finish.sh; tests/test_finish_md_worktree.py checks it.
 log() { echo "  $1"; }
 SYNC_WARNINGS=()
-MAIN_REF=main
-DEVELOP_REF=develop
 MAIN_SYNC_WARNING=""
 DEVELOP_SYNC_WARNING=""
 
@@ -107,7 +106,7 @@ warn_sync() {
 }
 
 sync_main_checkout() {
-  local b="$1" holder current changes pull
+  local b="$1" holder current changes pull q
   if ! holder=$(worktree_holding "$b"); then
     warn_sync "Could not determine which worktree holds $b. Run: git worktree list --porcelain" "$b"
   elif [[ -z "$holder" ]]; then
@@ -118,11 +117,13 @@ sync_main_checkout() {
       if ! current=$(git -C "$MAIN_CHECKOUT" branch --show-current); then
         warn_sync "Could not read the current branch in main checkout $MAIN_CHECKOUT. Run: git worktree list --porcelain"
       elif [[ -n "$current" && "$current" != develop ]]; then
-        warn_sync "main checkout $MAIN_CHECKOUT is on $current, not develop; to use the merge run: git -C $MAIN_CHECKOUT switch develop"
+        q=$(printf '%q' "$MAIN_CHECKOUT")
+        warn_sync "main checkout $MAIN_CHECKOUT is on $current, not develop; to use the merge run: git -C $q switch develop"
       fi
     fi
   else
-    pull="git -C $holder pull --ff-only origin $b"
+    q=$(printf '%q' "$holder")
+    pull="git -C $q pull --ff-only origin $b"
     if [[ ! -d "$holder" ]]; then
       warn_sync "Worktree $holder holding $b is missing. If it was removed, run git worktree prune. If restored, run: $pull" "$b"
     elif [[ "$holder" != "$MAIN_CHECKOUT" ]]; then
@@ -176,14 +177,14 @@ if [ "$LINKED" = true ]; then
   printf 'git -C %q worktree remove %q\n' "$MAIN_CHECKOUT" "$HERE"
   printf 'git -C %q branch -D %q\n' "$MAIN_CHECKOUT" "$CURRENT_BRANCH"
 else
-gh pr merge $PR_NUMBER --squash --delete-branch
-git checkout develop && git pull origin develop
-git fetch --prune origin   # drop stale remote-tracking refs for deleted branches
+  gh pr merge $PR_NUMBER --squash --delete-branch
+  git checkout develop && git pull origin develop
+  git fetch --prune origin   # drop stale remote-tracking refs for deleted branches
 fi
 ```
 
-In linked mode, print the cleanup commands for the user to run from outside this worktree.
-The feature branch is still checked out here.
+In linked mode, the block prints two cleanup commands. Give them to the user to run
+from outside this worktree because the feature branch is still checked out here.
 
 > **Safety check:** Before invoking `gh pr merge`, `/finish` and the
 > plugin-bundled `check-pr-base` hook both verify the PR's `baseRefName`
@@ -363,7 +364,7 @@ After merging back to develop, bump the version to the next patch and ensure `[U
      sync_main_checkout main
      sync_main_checkout develop
    else
-   git push origin develop
+     git push origin develop
    fi
    ```
 
