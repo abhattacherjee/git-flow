@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Synced harden-repo hooks to v1.5.1 (fleet-sync).
+
 ## [2.3.2] - 2026-11-26
 
 ### Changed
